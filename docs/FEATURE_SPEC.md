@@ -6,7 +6,7 @@
 | **Mã tài liệu** | `DOC-SPEC-01` |
 | **Đường dẫn tệp** | `docs/FEATURE_SPEC.md` |
 | **Phiên bản** | `1.0.0` |
-| **Ngày lập** | 12/11/2026 |
+| **Ngày lập** | 13/11/2026 |
 | **Nhóm tác giả** | `SonNX24042005` & `FATng` |
 | **Trạng thái** | Đang hoàn thiện (Draft) |
 
@@ -203,6 +203,308 @@ flowchart LR
   - Hết file descriptor của tiến trình (`EMFILE`, `ENFILE`) -> Ghi log mức `CRITICAL`, tạm thời không accept kết nối mới hoặc từ chối lịch sự bằng phản hồi `503 Service Unavailable`.
   - Hàng đợi tác vụ (Task queue) bị tràn -> Áp dụng cơ chế backpressure, từ chối xử lý tác vụ tạm thời với mã lỗi `503 Service Unavailable (SERVER_OVERLOADED)`.
   - Worker thread gặp exception/lỗi nội bộ -> Bắt lỗi, khôi phục trạng thái, trả về `500 Internal Server Error`, không làm dừng toàn bộ server.
+
+---
+
+### PHÂN NHÓM II: TÀI KHOẢN & PHIÊN LÀM VIỆC
+
+---
+
+#### 4.3. FEAT-03: Đăng ký và quản lý tài khoản (User Registration & Profile Management)
+- **Mức độ quan trọng / Điểm**: Trọng tâm (2 điểm).
+- **Tác nhân**: Khách chưa xác thực (`Guest`), Người dùng đã đăng nhập (`User`).
+- **Đầu vào**:
+  - *Đăng ký tài khoản (`REGISTER`)*:
+    - `username`: Tên đăng nhập (chuỗi ký tự chữ và số `[a-zA-Z0-9_]`, độ dài 3 - 32 ký tự).
+    - `password`: Mật khẩu người dùng (độ dài 6 - 64 ký tự).
+    - `full_name`: Họ và tên hiển thị (chuỗi UTF-8, độ dài 2 - 100 ký tự).
+    - `email`: Địa chỉ email (tùy chọn, đúng định dạng RFC 5322, tối đa 100 ký tự).
+  - *Xem thông tin tài khoản (`GET_PROFILE`)*:
+    - `target_user_id`: ID người dùng cần xem (nếu bỏ trống: xem chính mình).
+  - *Cập nhật hồ sơ (`UPDATE_PROFILE`)*:
+    - `full_name`, `email`, `bio` (tiểu sử, tối đa 255 ký tự).
+  - *Đổi mật khẩu (`CHANGE_PASSWORD`)*:
+    - `old_password`, `new_password`.
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Không cho phép đăng ký tài khoản mới khi socket đang ở trạng thái đã đăng nhập (`STATE_AUTHENTICATED`).
+  - `username` phải là duy nhất trên toàn hệ thống (Case-insensitive unique). Trùng lặp sẽ bị từ chối ngay lập tức.
+  - **Mật khẩu an toàn**: Tuyệt đối không lưu plain-text vào database. Server sinh một chuỗi muối ngẫu nhiên (`salt` 16 hoặc 32 bytes) cho mỗi người dùng, sau đó băm bằng giải thuật mã hóa an toàn (`SHA-256(salt + password)` hoặc `PBKDF2`/`bcrypt`).
+  - Cập nhật thông tin: Người dùng chỉ có quyền chỉnh sửa hồ sơ của chính mình.
+  - Đổi mật khẩu: Bắt buộc cung cấp chính xác `old_password`. Mật khẩu mới không được trùng mật khẩu cũ.
+- **Kết quả mong muốn**:
+  - Đăng ký thành công: Tạo bản ghi trong bảng `users`, trả về mã `201 Created` kèm `user_id` và thông báo thành công.
+  - Cập nhật thành công: Cập nhật dữ liệu vào database, trả về mã `200 OK` kèm dữ liệu hồ sơ mới nhất.
+  - Ghi log kiểm toán sự kiện đăng ký và đổi thông tin cá nhân.
+- **Các trường hợp lỗi**:
+  - `username` đã tồn tại -> Trả mã `409 Conflict (USERNAME_ALREADY_EXISTS)`.
+  - Định dạng username/password/email không hợp lệ -> Trả mã `400 Bad Request (INVALID_INPUT_FORMAT)`.
+  - Đổi mật khẩu nhưng `old_password` sai -> Trả mã `401 Unauthorized (OLD_PASSWORD_INCORRECT)`.
+  - Xem profile của `target_user_id` không tồn tại -> Trả mã `404 Not Found (USER_NOT_FOUND)`.
+  - Đang đăng nhập mà gửi lệnh `REGISTER` -> Trả mã `400 Bad Request (ALREADY_LOGGED_IN)`.
+
+---
+
+#### 4.4. FEAT-04: Đăng nhập và quản lý phiên (Authentication & Session Management)
+- **Mức độ quan trọng / Điểm**: Trọng tâm (2 điểm).
+- **Tác nhân**: Khách chưa xác thực (`Guest`), Người dùng đã đăng nhập (`User`).
+- **Đầu vào**:
+  - *Đăng nhập (`LOGIN`)*: `username`, `password`.
+  - *Đăng xuất (`LOGOUT`)*: Không có tham số (sử dụng phiên hiện hành).
+  - *Sự kiện đóng kết nối*: Client ngắt kết nối đột ngột hoặc gửi tín hiệu `QUIT`.
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Chỉ cho phép gửi lệnh `LOGIN` khi kết nối ở trạng thái `STATE_ANONYMOUS`.
+  - **Quy trình xác thực**: Truy vấn bảng `users` theo `username`. Nếu không tìm thấy hoặc mật khẩu sau khi băm với `salt` không khớp với `password_hash` trong DB -> Từ chối xác thực.
+  - **Bảo vệ phòng thủ**: Thông báo lỗi chung, không phân biệt "tài khoản không tồn tại" hay "sai mật khẩu" để chống tấn công dò quét người dùng (User Enumeration Attack).
+  - **Chính sách phiên làm việc**:
+    - Mỗi socket liên kết với duy nhất một `user_id` tại một thời điểm.
+    - *Chống đăng nhập xung đột (Concurrent Login Policy)*: Nếu tài khoản đang có phiên đăng nhập hoạt động trên một socket khác, server có thể:
+      - (Cách 1 - Khuyến nghị): Ngắt kết nối phiên cũ (`Force Logout / Kicked out` với thông báo đẩy `199 SESSION_TERMINATED_ELSEWHERE`) và cấp quyền cho phiên mới.
+      - (Cách 2): Từ chối phiên đăng nhập mới với mã `409 Conflict (ACCOUNT_ALREADY_ACTIVE)`.
+  - Khi đăng nhập thành công:
+    - Gán `user_id`, thời điểm đăng nhập vào cấu trúc phiên của socket.
+    - Cập nhật trạng thái người dùng trong RAM (`session_map`) thành `ONLINE`.
+    - Chuyển trạng thái kết nối sang `STATE_AUTHENTICATED`.
+  - Đăng xuất (`LOGOUT`):
+    - Chuyển trạng thái kết nối về `STATE_ANONYMOUS`.
+    - Xóa khỏi danh sách online trong RAM, cập nhật `last_seen` vào DB.
+    - Gửi thông báo đẩy cập nhật trạng thái offline tới bạn bè đang trực tuyến.
+  - **Thu hồi phiên tự động khi ngắt kết nối**: Khi socket bị đóng (`read() == 0` hoặc lỗi mạng), server tự động gọi hàm cleanup phiên làm việc, đảm bảo không rò rỉ phiên "ma" trên RAM.
+- **Kết quả mong muốn**:
+  - Đăng nhập thành công: Trả về mã `200 OK` kèm `user_id`, `username`, `session_token` (nếu dùng) và danh sách thống kê sơ bộ (số lời mời kết bạn chưa đọc, số sự kiện sắp diễn ra).
+  - Đăng xuất thành công: Trả về mã `200 OK (LOGGED_OUT)`.
+  - Ghi log hoạt động đăng nhập/đăng xuất (bao gồm IP, Port, thời gian, kết quả).
+- **Các trường hợp lỗi**:
+  - Sai username hoặc sai password -> Trả mã `401 Unauthorized (INVALID_CREDENTIALS)`.
+  - Tài khoản đang bị khóa/vô hiệu hóa -> Trả mã `403 Forbidden (ACCOUNT_SUSPENDED)`.
+  - Gửi lệnh `LOGIN` khi đã đăng nhập trên chính socket đó -> Trả mã `400 Bad Request (ALREADY_AUTHENTICATED)`.
+  - Gửi lệnh yêu cầu xác thực khi chưa đăng nhập -> Trả mã `401 Unauthorized (AUTHENTICATION_REQUIRED)`.
+
+---
+
+### PHÂN NHÓM III: QUẢN LÝ SỰ KIỆN
+
+---
+
+#### 4.5. FEAT-05: Lấy danh sách sự kiện (Get Event List & Access Filter)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Người dùng đã xác thực (`User`).
+- **Đầu vào**:
+  - Bộ lọc tùy chọn (`GET_EVENTS`):
+    - `scope`: `ALL` (mặc định), `MINE` (sự kiện tôi làm chủ), `JOINED` (sự kiện tôi đã tham gia), `INVITED` (đang có lời mời).
+    - `keyword`: Chuỗi tìm kiếm theo tiêu đề hoặc mô tả sự kiện (tối đa 100 ký tự).
+    - `from_time`, `to_time`: Giới hạn khoảng thời gian bắt đầu (timestamp Unix).
+    - `page`, `page_size`: Tham số phân trang (mặc định: `page=1`, `page_size=20`, tối đa `page_size=100`).
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - **Quy tắc phân quyền hiển thị (Crucial Access Rule)**:
+    - Sự kiện `PUBLIC`: Hiển thị cho toàn bộ người dùng trong hệ thống.
+    - Sự kiện `PRIVATE`: **Chỉ** được hiển thị khi người dùng thỏa mãn một trong các điều kiện sau:
+      1. Người dùng là Chủ sở hữu sự kiện (`creator_id == current_user_id`).
+      2. Người dùng đã được chấp nhận tham gia (`status == 'ACCEPTED'` trong bảng người tham gia sự kiện).
+      3. Người dùng đang nhận được lời mời tham gia sự kiện (`status == 'INVITED'`).
+    - *Người dùng lạ tuyệt đối không nhìn thấy hoặc tìm thấy bất kỳ thông tin nào của sự kiện `PRIVATE`*.
+- **Kết quả mong muốn**:
+  - Trả về mã `200 OK` kèm mảng danh sách sự kiện:
+    - Mỗi sự kiện gồm: `event_id`, `title`, `description`, `location`, `start_time`, `end_time`, `visibility` (`PUBLIC`/`PRIVATE`), `creator_id`, `creator_name`, `participant_count`, `max_participants`, `my_relation` (`OWNER`, `ACCEPTED`, `INVITED`, `REQUEST_PENDING`, `NONE`).
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Tham số phân trang âm hoặc vượt quá giới hạn -> Trả mã `400 Bad Request (INVALID_PAGINATION)`.
+  - Khoảng thời gian không hợp lệ (`from_time > to_time`) -> Trả mã `400 Bad Request (INVALID_TIME_RANGE)`.
+
+---
+
+#### 4.6. FEAT-06: Tạo mới sự kiện (Create Event)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Người dùng đã xác thực (`User` -> trở thành `Organizer`).
+- **Đầu vào**:
+  - Gói tin yêu cầu tạo sự kiện (`CREATE_EVENT`):
+    - `title`: Tiêu đề sự kiện (chuỗi UTF-8, độ dài 3 - 150 ký tự).
+    - `description`: Mô tả chi tiết (chuỗi UTF-8, tối đa 2000 ký tự, có thể rỗng).
+    - `location`: Địa điểm tổ chức (chuỗi UTF-8, độ dài 3 - 255 ký tự).
+    - `start_time`: Thời điểm bắt đầu (Unix timestamp).
+    - `end_time`: Thời điểm kết thúc (Unix timestamp).
+    - `visibility`: Phân loại hiển thị, nhận 1 trong 2 giá trị chuỗi: `PUBLIC` hoặc `PRIVATE`.
+    - `max_participants`: Số lượng người tham gia tối đa (số nguyên > 0; giá trị `0` biểu thị không giới hạn, mặc định `0`).
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - `title` và `location` không được rỗng hoặc chỉ toàn khoảng trắng.
+  - **Quy tắc thời gian**:
+    - `start_time` phải nằm trong tương lai so với thời gian hiện tại của server (`start_time > current_server_time`).
+    - `end_time` phải diễn ra sau `start_time` (`end_time > start_time`).
+    - Khoảng thời gian tối thiểu của sự kiện: ít nhất 15 phút (`(end_time - start_time) >= 900`).
+  - `visibility` bắt buộc phải là `PUBLIC` hoặc `PRIVATE`.
+  - **Khởi tạo quan hệ**: Người tạo tự động trở thành Chủ sự kiện (`creator_id = current_user_id`), đồng thời tự động thêm 1 bản ghi vào bảng tham gia sự kiện với vai trò `ORGANIZER` và trạng thái `ACCEPTED`.
+- **Kết quả mong muốn**:
+  - Tạo bản ghi mới trong bảng `events` và `event_participants`.
+  - Trả về mã `201 Created` kèm `event_id` mới tạo và toàn bộ thông tin chi tiết của sự kiện.
+  - Ghi log kiểm toán hành động tạo sự kiện.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Thiếu trường bắt buộc hoặc vượt quá độ dài quy định -> Trả mã `400 Bad Request (MISSING_OR_INVALID_FIELDS)`.
+  - Thời gian bắt đầu trong quá khứ -> Trả mã `422 Unprocessable Entity (START_TIME_IN_PAST)`.
+  - Thời gian kết thúc trước hoặc bằng thời gian bắt đầu -> Trả mã `422 Unprocessable Entity (END_TIME_MUST_BE_AFTER_START)`.
+  - Giá trị `visibility` không đúng quy chuẩn -> Trả mã `400 Bad Request (INVALID_VISIBILITY_TYPE)`.
+
+---
+
+#### 4.7. FEAT-07: Sửa thông tin sự kiện (Update Event)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Chủ sở hữu sự kiện (`Organizer`).
+- **Đầu vào**:
+  - Gói tin cập nhật sự kiện (`UPDATE_EVENT`):
+    - `event_id`: Định danh sự kiện cần chỉnh sửa.
+    - Các trường cập nhật tùy chọn: `title`, `description`, `location`, `start_time`, `end_time`, `visibility`, `max_participants`.
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - Sự kiện phải tồn tại trong cơ sở dữ liệu.
+  - **Quyền sở hữu**: Chỉ người tạo ra sự kiện (`events.creator_id == current_user_id`) mới có quyền thực hiện. Người khác yêu cầu sửa lập tức trả lỗi `403 Forbidden`.
+  - Sự kiện đã kết thúc trong quá khứ (`end_time <= current_server_time`) không được phép chỉnh sửa thông tin cốt lõi.
+  - Nếu cập nhật thời gian: Vẫn phải đảm bảo `end_time > start_time` và `end_time > current_server_time`.
+  - Nếu cập nhật `max_participants`: Giá trị mới không được nhỏ hơn số lượng thành viên hiện tại đã tham gia (`current_accepted_count`).
+- **Kết quả mong muốn**:
+  - Cập nhật bản ghi tương ứng trong bảng `events` (cập nhật trường `updated_at`).
+  - Trả về mã `200 OK` kèm dữ liệu sự kiện đã cập nhật cho Organizer.
+  - **Thông báo đẩy thời gian thực**: Server gửi thông báo `120 PUSH_EVENT_UPDATED` tới tất cả các thành viên đang tham gia sự kiện mà hiện đang trực tuyến (`ONLINE`).
+  - Ghi log kiểm toán thao tác sửa sự kiện.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Sự kiện không tồn tại -> Trả mã `404 Not Found (EVENT_NOT_FOUND)`.
+  - Không phải người tạo sự kiện -> Trả mã `403 Forbidden (NOT_EVENT_ORGANIZER)`.
+  - Sự kiện đã kết thúc -> Trả mã `409 Conflict (CANNOT_MODIFY_FINISHED_EVENT)`.
+  - Logic thời gian cập nhật không hợp lệ -> Trả mã `422 Unprocessable Entity (INVALID_EVENT_TIMES)`.
+  - `max_participants` nhỏ hơn số người đang tham gia -> Trả mã `409 Conflict (CAPACITY_LESS_THAN_CURRENT_MEMBERS)`.
+
+---
+
+#### 4.8. FEAT-08: Xóa thông tin sự kiện (Delete Event)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Chủ sở hữu sự kiện (`Organizer`).
+- **Đầu vào**:
+  - Gói tin yêu cầu xóa sự kiện (`DELETE_EVENT`): `event_id`.
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - Sự kiện phải tồn tại trong hệ thống.
+  - **Quyền hạn**: Bắt buộc người gửi lệnh phải là Chủ sở hữu sự kiện (`events.creator_id == current_user_id`). Người khác gửi lệnh lập tức bị từ chối với mã lỗi `403 Forbidden`.
+  - **Dọn dẹp liên kết dữ liệu (Cascade Cleanup)**:
+    - Khi xóa sự kiện, toàn bộ dữ liệu phụ thuộc trong bảng `event_participants`, `event_invitations`, `event_join_requests` phải được xóa sạch (CASCADE DELETE) hoặc cập nhật trạng thái hủy để tránh dữ liệu mồ côi (orphaned records).
+- **Kết quả mong muốn**:
+  - Bản ghi sự kiện và dữ liệu tham gia liên quan bị xóa hoàn toàn khỏi cơ sở dữ liệu.
+  - Trả về mã `200 OK (EVENT_DELETED_SUCCESSFULLY)` cho Organizer.
+  - **Thông báo đẩy thời gian thực**: Server gửi thông báo `121 PUSH_EVENT_CANCELLED` tới toàn bộ thành viên và người đang có lời mời/yêu cầu liên quan đến sự kiện (nếu họ đang online).
+  - Ghi log kiểm toán hoạt động xóa sự kiện.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Sự kiện không tồn tại -> Trả mã `404 Not Found (EVENT_NOT_FOUND)`.
+  - Người dùng không phải là chủ sở hữu sự kiện -> Trả mã `403 Forbidden (NOT_EVENT_ORGANIZER)`.
+
+---
+
+### PHÂN NHÓM IV: KẾT NỐI BẠN BÈ
+
+---
+
+#### 4.9. FEAT-09: Gửi lời mời kết bạn (Send Friend Request)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Người dùng đã xác thực (`User` - Người gửi).
+- **Đầu vào**:
+  - Gói tin gửi lời mời (`SEND_FRIEND_REQUEST`):
+    - `target_user_id` (hoặc `target_username`): Người nhận lời mời.
+    - `message`: Lời nhắn đính kèm (tùy chọn, tối đa 200 ký tự).
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - Người nhận phải tồn tại trong hệ thống.
+  - **Chặn tự kết bạn**: Không cho phép người dùng tự gửi lời mời kết bạn cho chính mình (`sender_id != target_user_id`).
+  - **Kiểm tra trạng thái quan hệ hiện hữu**:
+    - Hai người chưa phải là bạn bè (không có bản ghi trạng thái `ACCEPTED`).
+    - Người gửi chưa có lời mời kết bạn nào đang chờ xử lý (`PENDING`) gửi tới đối phương.
+    - *Trường hợp đối phương đã gửi lời mời cho người gửi từ trước và đang chờ duyệt*: Hệ thống thông báo xung đột hoặc gợi ý người dùng chấp nhận lời mời có sẵn (`409 Conflict - INVITATION_ALREADY_RECEIVED`).
+- **Kết quả mong muốn**:
+  - Tạo bản ghi mới trong bảng `friendships` với trạng thái `PENDING` (`requester_id = current_user_id`, `addressee_id = target_user_id`).
+  - Trả về mã `201 Created` kèm `request_id` cho người gửi.
+  - **Thông báo đẩy thời gian thực**: Nếu người nhận đang trực tuyến (`ONLINE`), server đẩy ngay thông báo `101 PUSH_FRIEND_REQ` tới socket của họ kèm thông tin người gửi và lời nhắn.
+  - Ghi log hoạt động kết bạn.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Người nhận không tồn tại -> Trả mã `404 Not Found (USER_NOT_FOUND)`.
+  - Tự gửi lời mời cho bản thân -> Trả mã `400 Bad Request (CANNOT_FRIEND_SELF)`.
+  - Đã là bạn bè từ trước -> Trả mã `409 Conflict (ALREADY_FRIENDS)`.
+  - Đã gửi lời mời và đang chờ xử lý -> Trả mã `409 Conflict (FRIEND_REQUEST_PENDING)`.
+  - Đối phương đã gửi lời mời trước đó -> Trả mã `409 Conflict (INVITATION_ALREADY_RECEIVED)`.
+
+---
+
+#### 4.10. FEAT-10: Chấp nhận/từ chối lời mời kết bạn (Respond to Friend Request)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Người dùng nhận lời mời (`User` - Người nhận).
+- **Đầu vào**:
+  - Gói tin phản hồi lời mời (`RESPOND_FRIEND_REQUEST`):
+    - `request_id` (hoặc `sender_user_id`).
+    - `action`: Chuỗi hành động, nhận 1 trong 2 giá trị: `ACCEPT` (Đồng ý) hoặc `REJECT` (Từ chối).
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - Bản ghi yêu cầu kết bạn phải tồn tại và đang ở trạng thái `PENDING`.
+  - **Quyền xử lý**: Bắt buộc người thực hiện phải là Người nhận đích danh (`friendships.addressee_id == current_user_id`). Người gửi không được tự duyệt yêu cầu của chính mình.
+  - Xử lý hành động:
+    - Nếu `ACCEPT`: Cập nhật trạng thái trong bảng `friendships` thành `ACCEPTED`. Quan hệ bạn bè chính thức được kích hoạt hai chiều.
+    - Nếu `REJECT`: Xóa bản ghi quan hệ hoặc cập nhật trạng thái thành `REJECTED`.
+- **Kết quả mong muốn**:
+  - Cập nhật cơ sở dữ liệu bền vững.
+  - Trả về mã `200 OK` cho người nhận lời mời.
+  - **Thông báo đẩy thời gian thực**: Nếu `action == ACCEPT` và người gửi lời mời đang online, server gửi thông báo `102 PUSH_FRIEND_ACC` tới socket người gửi để cập nhật danh bạ ngay lập tức.
+  - Ghi log kiểm toán việc thiết lập quan hệ bạn bè.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Yêu cầu kết bạn không tồn tại -> Trả mã `404 Not Found (FRIEND_REQUEST_NOT_FOUND)`.
+  - Không phải người nhận của lời mời -> Trả mã `403 Forbidden (NOT_AUTHORIZED_TO_RESPOND)`.
+  - Yêu cầu đã được phản hồi trước đó -> Trả mã `409 Conflict (REQUEST_ALREADY_PROCESSED)`.
+  - Tham số `action` không hợp lệ -> Trả mã `400 Bad Request (INVALID_ACTION_VALUE)`.
+
+---
+
+#### 4.11. FEAT-11: Hủy kết bạn (Unfriend)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Người dùng đã xác thực (`User`).
+- **Đầu vào**:
+  - Gói tin hủy kết bạn (`UNFRIEND`):
+    - `target_user_id`: ID người bạn muốn hủy quan hệ.
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - `target_user_id` phải tồn tại trong cơ sở dữ liệu.
+  - Giữa `current_user_id` và `target_user_id` phải đang tồn tại mối quan hệ bạn bè ở trạng thái `ACCEPTED`.
+  - Không cho phép tự unfriend chính mình (`current_user_id != target_user_id`).
+  - Sau khi hủy kết bạn: Mối quan hệ trở về trạng thái người lạ. Hai người sẽ không nhìn thấy sự kiện `PRIVATE` của nhau nếu chưa được mời trước đó.
+- **Kết quả mong muốn**:
+  - Xóa bản ghi tương ứng trong bảng `friendships` (hoặc chuyển thành `UNFRIENDED`).
+  - Trả về mã `200 OK (UNFRIENDED_SUCCESSFULLY)`.
+  - Ghi log kiểm toán thao tác hủy kết bạn.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Người dùng mục tiêu không tồn tại -> Trả mã `404 Not Found (USER_NOT_FOUND)`.
+  - Hai người hiện không phải là bạn bè -> Trả mã `400 Bad Request (NOT_FRIENDS)`.
+  - Truyền ID chính mình -> Trả mã `400 Bad Request (INVALID_TARGET_USER)`.
+
+---
+
+#### 4.12. FEAT-12: Hiển thị danh sách bạn bè (List Friends & Online Status)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Người dùng đã xác thực (`User`).
+- **Đầu vào**:
+  - Gói tin truy vấn (`GET_FRIENDS`):
+    - `filter_status`: `ALL` (tất cả, mặc định), `ONLINE_ONLY` (chỉ lấy người đang online).
+    - `keyword`: Tìm kiếm bạn bè theo tên (tùy chọn).
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - Truy vấn toàn bộ người dùng có quan hệ bạn bè hai chiều `ACCEPTED` với `current_user_id`.
+  - **Trạng thái trực tuyến thời gian thực (Real-time Online Mapping)**:
+    - Server đối chiếu danh sách bạn bè với Bảng phiên kết nối đang mở trong RAM (`active_session_map`).
+    - Nếu `user_id` đang có socket kết nối hợp lệ -> Đánh dấu `status = 'ONLINE'`.
+    - Nếu không có kết nối -> Đánh dấu `status = 'OFFLINE'` và trả về thời gian hoạt động cuối (`last_seen`).
+- **Kết quả mong muốn**:
+  - Trả về mã `200 OK` kèm danh sách mảng bạn bè:
+    - Cấu trúc mỗi phần tử: `user_id`, `username`, `full_name`, `online_status` (`ONLINE`/`OFFLINE`), `last_seen_timestamp`.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Bộ lọc không hợp lệ -> Trả mã `400 Bad Request (INVALID_FILTER)`.
 
 ---
 
