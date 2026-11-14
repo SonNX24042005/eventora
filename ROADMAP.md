@@ -42,7 +42,7 @@ flowchart TD
   - [x] Tạo kho lưu trữ GitHub công khai, cập nhật `README.md` và `PROJECT_PLAN.md`.
   - [x] Gửi lời mời cộng tác cho thành viên `FATng`.
   - [x] Xác nhận `FATng` tham gia repo và điền liên kết kho lưu trữ vào trang tính (sheet) của lớp.
-  - [ ] **Bước thiết kế 1 (cả nhóm chốt chung)**: soạn đặc tả tính năng (`docs/FEATURE_SPEC.md`) cho toàn bộ 17 chức năng — làm rõ tác nhân, đầu vào, quy tắc kiểm tra nghiệp vụ, kết quả mong muốn và các trường hợp lỗi.
+  - [x] **Bước thiết kế 1 (cả nhóm chốt chung)**: soạn đặc tả tính năng (`docs/FEATURE_SPEC.md`) cho toàn bộ 17 chức năng — làm rõ tác nhân, đầu vào, quy tắc kiểm tra nghiệp vụ, kết quả mong muốn và các trường hợp lỗi.
   - [ ] **Bước thiết kế 2 (`SonNX24042005` viết chính, `FATng` duyệt chéo)**: vẽ sơ đồ quan hệ thực thể (`ERD`) dựa trên đặc tả tính năng và chi tiết hóa thành lược đồ cơ sở dữ liệu (`docs/DATABASE_SCHEMA.md`).
   - [ ] **Bước thiết kế 3 (`FATng` viết chính, `SonNX24042005` duyệt chéo)**: soạn đặc tả giao thức tầng ứng dụng (`docs/PROTOCOL_SPEC.md`) khớp với các trường dữ liệu, luồng thông báo đẩy và mã lỗi ở bước 1–2.
   - [ ] Dựng cấu trúc thư mục tách lớp (`include/`, `src/`, `tests/`), cấu hình `CMakeLists.txt` (bật cờ `--coverage`) và `GitHub Actions` tự động đo độ bao phủ.

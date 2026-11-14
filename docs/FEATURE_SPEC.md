@@ -6,9 +6,9 @@
 | **Mã tài liệu** | `DOC-SPEC-01` |
 | **Đường dẫn tệp** | `docs/FEATURE_SPEC.md` |
 | **Phiên bản** | `1.0.0` |
-| **Ngày lập** | 13/11/2026 |
+| **Ngày lập** | 14/11/2026 |
 | **Nhóm tác giả** | `SonNX24042005` & `FATng` |
-| **Trạng thái** | Đang hoàn thiện (Draft) |
+| **Trạng thái** | Chốt duyệt cơ sở (Baseline Approved) |
 
 ---
 
@@ -505,6 +505,177 @@ flowchart LR
 - **Các trường hợp lỗi**:
   - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
   - Bộ lọc không hợp lệ -> Trả mã `400 Bad Request (INVALID_FILTER)`.
+
+---
+
+### PHÂN NHÓM V: THAM GIA SỰ KIỆN
+
+---
+
+#### 4.13. FEAT-13: Gửi lời mời tham gia sự kiện (Invite Friend to Event)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Chủ sự kiện (`Organizer`) hoặc Thành viên đã tham gia (`Participant`).
+- **Đầu vào**:
+  - Gói tin mời bạn vào sự kiện (`INVITE_TO_EVENT`):
+    - `event_id`: Định danh sự kiện.
+    - `invitee_id`: ID người bạn muốn mời.
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - Sự kiện phải tồn tại và chưa kết thúc (`events.end_time > current_server_time`).
+  - **Quy tắc bạn bè**: Người mời và người được mời bắt buộc phải là bạn bè của nhau (`friendships.status == 'ACCEPTED'`).
+  - **Quyền hạn mời**:
+    - Đối với sự kiện `PRIVATE`: Chỉ Chủ sở hữu sự kiện (`Organizer`) hoặc thành viên đã được cấp quyền mời mới được gửi lời mời.
+    - Đối với sự kiện `PUBLIC`: Cho phép thành viên mời bạn bè tham gia.
+  - **Chống trùng lặp quan hệ tham gia**:
+    - Người được mời không phải chính là người gửi lời mời (`invitee_id != current_user_id`).
+    - Người được mời chưa phải là thành viên chính thức (`status != 'ACCEPTED'`).
+    - Người được mời chưa có lời mời nào đang chờ phản hồi (`status != 'INVITED'`).
+- **Kết quả mong muốn**:
+  - Tạo bản ghi trong bảng `event_participants` với trạng thái `INVITED` (kèm `invited_by = current_user_id`).
+  - Trả về mã `201 Created` cho người gửi lời mời.
+  - **Thông báo đẩy thời gian thực**: Nếu người được mời đang trực tuyến, server phát thông báo `110 PUSH_EVENT_INVITE` tới socket của họ kèm thông tin cơ bản của sự kiện và người mời.
+  - Ghi log kiểm toán thao tác mời tham gia sự kiện.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Sự kiện không tồn tại -> Trả mã `404 Not Found (EVENT_NOT_FOUND)`.
+  - Người được mời không tồn tại -> Trả mã `404 Not Found (USER_NOT_FOUND)`.
+  - Không phải bạn bè của nhau -> Trả mã `403 Forbidden (CANNOT_INVITE_NON_FRIEND)`.
+  - Không có quyền mời trong sự kiện này -> Trả mã `403 Forbidden (NOT_AUTHORIZED_TO_INVITE)`.
+  - Người được mời đã là thành viên sự kiện -> Trả mã `409 Conflict (USER_ALREADY_JOINED)`.
+  - Lời mời đã được gửi trước đó và đang chờ -> Trả mã `409 Conflict (INVITATION_ALREADY_PENDING)`.
+  - Sự kiện đã kết thúc -> Trả mã `409 Conflict (EVENT_ALREADY_FINISHED)`.
+
+---
+
+#### 4.14. FEAT-14: Chấp nhận/từ chối lời mời tham gia sự kiện (Respond to Event Invitation)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Người được mời (`Invitee`).
+- **Đầu vào**:
+  - Gói tin phản hồi lời mời (`RESPOND_EVENT_INVITATION`):
+    - `event_id`: Định danh sự kiện.
+    - `action`: `ACCEPT` (Đồng ý tham gia) hoặc `DECLINE` (Từ chối).
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - Sự kiện phải tồn tại và chưa kết thúc (`end_time > current_server_time`).
+  - Phải tồn tại một bản ghi lời mời hợp lệ dành riêng cho người dùng (`user_id == current_user_id` và `status == 'INVITED'`).
+  - **Kiểm tra sức chứa tối đa (`max_participants`)**: Nếu `action == ACCEPT` và sự kiện có quy định giới hạn số người (`max_participants > 0`): Tổng số thành viên `ACCEPTED` hiện tại phải nhỏ hơn `max_participants`. Nếu sự kiện đã đủ người -> Từ chối chấp nhận lời mời.
+  - Xử lý hành động:
+    - Nếu `ACCEPT`: Cập nhật trạng thái bản ghi thành `ACCEPTED` (chính thức trở thành người tham gia).
+    - Nếu `DECLINE`: Cập nhật trạng thái thành `DECLINED` hoặc xóa bản ghi lời mời.
+- **Kết quả mong muốn**:
+  - Cập nhật trạng thái trong cơ sở dữ liệu.
+  - Trả về mã `200 OK` cho người phản hồi.
+  - **Thông báo đẩy thời gian thực**: Nếu `action == ACCEPT` và Chủ sở hữu sự kiện (`Organizer`) đang online, server gửi thông báo `113 PUSH_INVITATION_ACCEPTED` tới Organizer.
+  - Ghi log kiểm toán thao tác tham gia sự kiện.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Sự kiện không tồn tại -> Trả mã `404 Not Found (EVENT_NOT_FOUND)`.
+  - Không tìm thấy lời mời đang chờ của người dùng -> Trả mã `404 Not Found (INVITATION_NOT_FOUND)`.
+  - Sự kiện đã hết chỗ tham gia -> Trả mã `409 Conflict (EVENT_CAPACITY_REACHED)`.
+  - Sự kiện đã kết thúc -> Trả mã `409 Conflict (EVENT_ALREADY_FINISHED)`.
+  - Giá trị `action` sai định dạng -> Trả mã `400 Bad Request (INVALID_ACTION)`.
+
+---
+
+#### 4.15. FEAT-15: Yêu cầu tham gia sự kiện công khai (Request to Join Public Event)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Người dùng muốn tham gia sự kiện (`Requester`).
+- **Đầu vào**:
+  - Gói tin xin tham gia (`REQUEST_JOIN_EVENT`):
+    - `event_id`: Định danh sự kiện muốn tham gia.
+    - `message`: Lời nhắn gửi ban tổ chức (tùy chọn, tối đa 200 ký tự).
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - Sự kiện phải tồn tại và chưa kết thúc.
+  - **Quy tắc loại sự kiện (Crucial Rule)**: Sự kiện bắt buộc phải có phân loại hiển thị là `PUBLIC` (`visibility == 'PUBLIC'`). Tuyệt đối **không** cho phép người dùng tự gửi yêu cầu tham gia vào sự kiện `PRIVATE` (sự kiện riêng tư chỉ có thể tham gia thông qua lời mời từ bạn bè theo `FEAT-13`).
+  - **Chống trùng lặp**:
+    - Người gửi không phải là Chủ sự kiện (`creator_id != current_user_id`).
+    - Người gửi chưa phải là thành viên đã tham gia (`status != 'ACCEPTED'`).
+    - Người gửi chưa có yêu cầu nào đang chờ duyệt (`status != 'REQUEST_PENDING'`).
+  - Sự kiện chưa vượt quá số lượng tối đa (`max_participants`).
+- **Kết quả mong muốn**:
+  - Tạo bản ghi mới trong bảng `event_participants` với trạng thái `REQUEST_PENDING`.
+  - Trả về mã `201 Created` cho người gửi yêu cầu.
+  - **Thông báo đẩy thời gian thực**: Nếu Chủ sự kiện (`Organizer`) đang online, server phát ngay thông báo `111 PUSH_JOIN_REQ` tới socket của Organizer để thông báo có người xin tham gia.
+  - Ghi log hoạt động.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Sự kiện không tồn tại -> Trả mã `404 Not Found (EVENT_NOT_FOUND)`.
+  - Gửi yêu cầu vào sự kiện `PRIVATE` -> Trả mã `403 Forbidden (CANNOT_REQUEST_PRIVATE_EVENT)`.
+  - Đã là thành viên sự kiện -> Trả mã `409 Conflict (ALREADY_PARTICIPANT)`.
+  - Đã có yêu cầu đang chờ phê duyệt -> Trả mã `409 Conflict (JOIN_REQUEST_PENDING)`.
+  - Sự kiện đã đầy người -> Trả mã `409 Conflict (EVENT_CAPACITY_REACHED)`.
+  - Sự kiện đã kết thúc -> Trả mã `409 Conflict (EVENT_ALREADY_FINISHED)`.
+
+---
+
+#### 4.16. FEAT-16: Chấp nhận/từ chối yêu cầu tham gia sự kiện (Approve/Reject Join Request)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Chủ sở hữu sự kiện (`Organizer`).
+- **Đầu vào**:
+  - Gói tin phê duyệt (`DECIDE_JOIN_REQUEST`):
+    - `event_id`: Định danh sự kiện.
+    - `requester_id`: ID người dùng xin tham gia.
+    - `action`: `APPROVE` (Chấp thuận) hoặc `REJECT` (Từ chối).
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - Yêu cầu trạng thái phiên: `STATE_AUTHENTICATED`.
+  - Sự kiện phải tồn tại và chưa kết thúc.
+  - **Quyền hạn phê duyệt**: Bắt buộc người gửi lệnh phải là Chủ sở hữu sự kiện (`events.creator_id == current_user_id`). Bất kỳ người nào khác đều bị từ chối với mã `403 Forbidden`.
+  - Phải có bản ghi yêu cầu tham gia đang ở trạng thái `REQUEST_PENDING` của đúng `requester_id` trên sự kiện này.
+  - Nếu `action == APPROVE`:
+    - Kiểm tra số lượng người hiện tại so với `max_participants`. Nếu đã đầy -> Báo lỗi `409 Conflict`, không thể duyệt thêm.
+    - Cập nhật trạng thái bản ghi thành `ACCEPTED`.
+  - Nếu `action == REJECT`:
+    - Cập nhật trạng thái bản ghi thành `REJECTED` hoặc xóa bản ghi yêu cầu.
+- **Kết quả mong muốn**:
+  - Cập nhật cơ sở dữ liệu.
+  - Trả về mã `200 OK` cho Organizer.
+  - **Thông báo đẩy thời gian thực**: Nếu người xin tham gia (`requester_id`) đang trực tuyến (`ONLINE`), server phát thông báo `112 PUSH_JOIN_DECIDED` kèm kết quả duyệt (`APPROVED` hoặc `REJECTED`) tới socket của họ.
+  - Ghi log kiểm toán thao tác duyệt người tham gia.
+- **Các trường hợp lỗi**:
+  - Chưa đăng nhập -> Trả mã `401 Unauthorized`.
+  - Sự kiện không tồn tại -> Trả mã `404 Not Found (EVENT_NOT_FOUND)`.
+  - Người thực hiện không phải chủ sở hữu sự kiện -> Trả mã `403 Forbidden (NOT_EVENT_ORGANIZER)`.
+  - Yêu cầu xin tham gia không tồn tại hoặc đã xử lý -> Trả mã `404 Not Found (JOIN_REQUEST_NOT_FOUND)`.
+  - Sự kiện đã đủ số lượng tối đa khi bấm duyệt -> Trả mã `409 Conflict (EVENT_CAPACITY_REACHED)`.
+  - Sự kiện đã kết thúc -> Trả mã `409 Conflict (EVENT_ALREADY_FINISHED)`.
+  - Tham số `action` sai -> Trả mã `400 Bad Request (INVALID_DECISION_ACTION)`.
+
+---
+
+### PHÂN NHÓM VI: HỆ THỐNG & GIÁM SÁT
+
+---
+
+#### 4.17. FEAT-17: Ghi log hoạt động (Activity Logging & Audit Trail)
+- **Mức độ quan trọng / Điểm**: Cần thiết (1 điểm).
+- **Tác nhân**: Hạ tầng máy chủ (`Server Core Engine` & `Logger Module`).
+- **Mục tiêu**: Lưu vết mọi giao dịch, lỗi hệ thống, hành vi kết nối phục vụ giám sát, điều tra sự cố và kiểm toán an ninh.
+- **Đầu vào**:
+  - Thông tin sự kiện phát sinh từ mọi tầng xử lý:
+    - Thời điểm phát sinh (`timestamp` chuẩn ISO 8601 hoặc `[YYYY-MM-DD HH:MM:SS.mmm]`).
+    - Cấp độ log (`LogLevel`): `DEBUG`, `INFO`, `WARN`, `ERROR`, `CRITICAL`.
+    - Địa chỉ nguồn: `Client_IP:Port` và file descriptor `fd`.
+    - Định danh phiên: `user_id` / `username` (hoặc `ANONYMOUS` nếu chưa xác thực).
+    - Tên lệnh/Thao tác: Mã opcode hoặc chuỗi lệnh (`COMMAND` / `ACTION`).
+    - Mã trạng thái phản hồi: `Status_Code` (ví dụ `200`, `201`, `401`, `403`, `500`).
+    - Thời gian xử lý: `execution_time_ms`.
+    - Thông điệp mô tả chi tiết: `message`.
+- **Quy tắc kiểm tra nghiệp vụ**:
+  - **An toàn đa luồng (Thread-Safety)**: Module ghi log phải sử dụng `pthread_mutex_t` để đồng bộ khi ghi ra luồng chung, đảm bảo các dòng log từ nhiều worker thread không bị trộn lẫn hoặc đứt đoạn ký tự.
+  - **Không làm nghẽn I/O**: Ghi log có bộ đệm hoặc xử lý tuần tự nhanh, có cờ cấu hình tắt log `DEBUG` trong môi trường chạy tải cao để tối ưu thông lượng.
+  - **Bảo mật dữ liệu nhạy cảm (Security / Privacy)**: Tuyệt đối **không** được ghi mật khẩu người dùng (kể cả dạng plain-text hay băm) vào file log.
+  - **Toàn vẹn kiểm toán**: Mọi thao tác làm thay đổi dữ liệu (đăng ký, đăng nhập, đổi mật khẩu, kết bạn, tạo/sửa/xóa sự kiện, duyệt người tham gia) bắt buộc phải được ghi ở mức `INFO`. Mọi lỗi socket và lỗi hệ thống ghi ở mức `WARN`/`ERROR`.
+- **Kết quả mong muốn**:
+  - Đầu ra kép:
+    - In màu ra màn hình dòng lệnh chuẩn (`stdout` / `stderr`).
+    - Ghi nối tiếp vào tệp lưu trữ trên đĩa (`logs/eventora_server.log`).
+  - Định dạng chuẩn thống nhất:
+    `[YYYY-MM-DD HH:MM:SS.mmm] [LEVEL] [IP:PORT] [USER] [CMD] Code: XXX - Message`
+- **Các trường hợp lỗi**:
+  - Không thể mở tệp log (hết quyền ghi, sai đường dẫn) -> Tự động chuyển hướng (fallback) toàn bộ log ra màn hình console `stderr`, ghi cảnh báo, không làm crash server.
+  - Ổ đĩa bị đầy (Disk Full) -> Xử lý lỗi `ENOSPC`, bỏ qua việc ghi đĩa tạm thời và cảnh báo ra `stderr`.
+  - Tham số log chứa ký tự điều khiển lạ -> Lọc sạch (sanitize) chuỗi trước khi ghi để chống tấn công giả mạo log (Log Injection Attack).
 
 ---
 
