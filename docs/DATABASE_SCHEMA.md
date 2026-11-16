@@ -649,11 +649,21 @@ LIMIT :limit OFFSET :offset;
 
 ## 12. Kiểm chứng
 
-DDL ở mục 8 và toàn bộ truy vấn mẫu ở mục 11 đã được chạy thử nguyên văn trên SQLite 3.45.1 (ngày 16/11/2026), gồm:
+Script `tests/schema/check_schema.py` đọc thẳng tài liệu này, chạy nguyên văn DDL ở mục 8, khối PRAGMA ở mục 10 và toàn bộ truy vấn mẫu ở mục 11 trên cơ sở dữ liệu thử. Các ca kiểm tra gồm:
 - Tạo lược đồ và đọc lại `user_version`.
 - Từng ràng buộc `CHECK`, `UNIQUE`, khóa ngoại, kiểu `STRICT` và từng trigger, cả ca hợp lệ lẫn ca bị từ chối, kèm mã lỗi mở rộng tương ứng.
 - Xóa dây chuyền khi xóa sự kiện.
 - Kết quả của từng truy vấn mẫu trên dữ liệu thử, và việc Q1 dùng chỉ mục `ux_friendships_pair`.
-- Hành vi `SQLITE_BUSY` khi hai kết nối cùng ghi ở chế độ WAL.
+- Hành vi `SQLITE_BUSY` khi hai kết nối cùng ghi ở chế độ WAL, và lỗi `SQLITE_BUSY_SNAPSHOT` trả về ngay khi giao dịch `DEFERRED` đọc trước rồi mới ghi.
 
-Khi sửa lược đồ, phải tăng `user_version`, cập nhật mục 8 và chạy lại toàn bộ kiểm chứng trên.
+Chạy từ gốc repo:
+
+```sh
+python3 tests/schema/check_schema.py
+```
+
+Script cần Python 3.11 trở lên (thuộc tính `sqlite_errorname` có từ 3.11 theo tài liệu module `sqlite3` tại https://docs.python.org/3/library/sqlite3.html, tra ngày 16/11/2026) và SQLite 3.37.0 trở lên (bản đi kèm module `sqlite3` của Python). Mã thoát là 0 khi mọi ca đạt, 1 khi có ca hỏng, 2 khi môi trường hoặc tài liệu không hợp lệ. Lần chạy ngày 16/11/2026 trên Python 3.12.3 và SQLite 3.45.1 đạt 102/102 ca.
+
+Script nhận ra từng khối mã theo dòng đầu tiên: `-- schema:` cho DDL, `PRAGMA foreign_keys` cho khối PRAGMA, `-- query: <tên>` cho từng truy vấn mẫu. Khi sửa tài liệu phải giữ nguyên các dòng đầu này.
+
+Khi sửa lược đồ, phải tăng `user_version`, cập nhật mục 8, sửa các ca kiểm tra tương ứng trong script rồi chạy lại.
