@@ -5,7 +5,7 @@
 | **Tên dự án** | **Eventora** — ứng dụng quản lý sự kiện và kết nối bạn bè |
 | **Mã tài liệu** | `DOC-SPEC-01` |
 | **Đường dẫn tệp** | `docs/FEATURE_SPEC.md` |
-| **Phiên bản** | `2.0.0` |
+| **Phiên bản** | `2.0.1` |
 | **Ngày lập** | 14/11/2026 (cập nhật: 16/11/2026) |
 | **Nhóm tác giả** | `SonNX24042005` & `FATng` |
 | **Trạng thái** | Đã duyệt và chốt thiết kế cơ sở (baseline approved) |
@@ -17,6 +17,7 @@
 | `1.0.0` | 14/11/2026 | Bản đặc tả đầu tiên cho 17 tính năng. |
 | `1.1.0` | 16/11/2026 | Chuẩn hóa cách viết; chốt khung bản tin văn bản theo dòng, băm `PBKDF2-HMAC-SHA256`, chính sách đăng nhập trùng và mô hình một bảng `event_participants`. |
 | `2.0.0` | 16/11/2026 | Rà soát toàn diện: trường dạng `khóa=giá trị` và khối phản hồi danh sách nhiều dòng; xử lý tuần tự theo phiên và định danh kết nối không tái sử dụng; danh mục mã lý do và thứ tự kiểm tra lỗi thống nhất; bảng chuyển trạng thái tham gia sự kiện (`Organizer` là người duyệt duy nhất); không để lộ sự kiện `PRIVATE`; chống dò mật khẩu và khóa tài khoản tạm thời; thời gian chờ phiên; ghi log bất đồng bộ; tách chỉ tiêu tải cho lệnh băm mật khẩu. |
+| `2.0.1` | 16/11/2026 | Đồng bộ ràng buộc bảng `friendships` (mục 2.9) với `docs/DATABASE_SCHEMA.md`: lưu theo chiều gửi, duy nhất theo cặp không thứ tự. |
 
 ---
 
@@ -251,7 +252,7 @@ Mọi tham số có thể ghi đè bằng tùy chọn dòng lệnh, ví dụ `./
 
 ### 2.9. Ràng buộc dữ liệu tối thiểu (đầu vào cho `docs/DATABASE_SCHEMA.md`)
 - **`users`**: `username` duy nhất không phân biệt hoa thường (`COLLATE NOCASE`), lưu nguyên dạng người dùng nhập; `password_hash` (32 byte), `salt` (16 byte), `pbkdf2_iterations`; `failed_login_count`, `locked_until`; `full_name`, `email` (có thể `NULL`), `bio`, `created_at`, `last_seen`.
-- **`friendships`**: mỗi cặp người dùng có **tối đa một** bản ghi, bất kể chiều gửi. Lưu `user_low_id < user_high_id` kèm `requester_id`, với ràng buộc `UNIQUE(user_low_id, user_high_id)` và `CHECK(user_low_id < user_high_id)`. `status` chỉ gồm `PENDING` và `ACCEPTED` (từ chối và hủy kết bạn đều xóa bản ghi). Thêm `message`, `created_at`, `updated_at`.
+- **`friendships`**: lưu theo chiều gửi (`requester_id`, `addressee_id`, với `CHECK(requester_id <> addressee_id)`), nhưng mỗi cặp người dùng có **tối đa một** bản ghi bất kể chiều gửi, bảo đảm bằng chỉ mục duy nhất trên cặp không thứ tự (chi tiết ở `docs/DATABASE_SCHEMA.md`). `status` chỉ gồm `PENDING` và `ACCEPTED` (từ chối và hủy kết bạn đều xóa bản ghi). Thêm `message`, `created_at`, `updated_at`.
 - **`events`**: `creator_id` (khóa ngoại tới `users`), `visibility IN ('PUBLIC', 'PRIVATE')`, `max_participants >= 0`, `CHECK(end_time - start_time >= 900)`, `created_at`, `updated_at`.
 - **`event_participants`**: `UNIQUE(event_id, user_id)`; khóa ngoại `event_id` tới `events` với `ON DELETE CASCADE`; `role IN ('ORGANIZER', 'PARTICIPANT')`; `status IN ('INVITED', 'REQUEST_PENDING', 'ACCEPTED', 'DECLINED', 'REJECTED')`; `invited_by` (có thể `NULL`), `message`, `created_at`, `updated_at`. Mỗi sự kiện có đúng một bản ghi `ORGANIZER`.
 
