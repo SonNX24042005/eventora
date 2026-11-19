@@ -559,3 +559,255 @@ S: 200|OK|event_id=12|title=Họp lớp K68|description=Gặp mặt cuối năm|
 C: DELETE_EVENT|event_id=12
 S: 200|OK
 ```
+
+---
+
+### 4.5. Nhóm Kết nối bạn bè (`FEAT-09` → `FEAT-12`)
+
+#### 4.5.1. `SEND_FRIEND_REQUEST` — Gửi lời mời kết bạn
+- **Mô tả**: tra trạng thái cặp trong `friendships` (`q1_friend_pair`) trong `BEGIN IMMEDIATE`:
+  - Chưa có bản ghi → tạo mới `PENDING` (`201|CREATED`) và gửi `101`.
+  - Đã có `PENDING` do người kia gửi → chuyển ngay sang `ACCEPTED` (`200|OK`) và gửi `102` (nguyên tắc hai bên cùng chủ động).
+- **Tham số yêu cầu**:
+
+| Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
+| :--- | :---: | :---: | :--- |
+| `user_id` hoặc `username` | `int64` / `string` | Đúng 1 khóa | Tham chiếu người nhận; không được trùng người gọi. |
+| `message` | `string` | Không | 0–200 ký tự sau trim, một dòng (mặc định `''`). |
+
+- **Phản hồi thành công**:
+  - Tạo lời mời mới: `201|CREATED|request_id=<int64>|status=PENDING`
+  - Tự động ghép đôi do người kia đã mời trước: `200|OK|request_id=<int64>|status=ACCEPTED`
+- **Thông báo đẩy phát sinh**:
+  - `101|PUSH_FRIEND_REQ` tới người nhận (khi tạo mới `PENDING`).
+  - `102|PUSH_FRIEND_ACC` tới người kia (khi chuyển `PENDING` → `ACCEPTED`).
+- **Lỗi theo thứ tự kiểm tra**:
+  1. `401|AUTHENTICATION_REQUIRED`
+  2. `400|INVALID_FIELD`
+  3. `400|CANNOT_TARGET_SELF`
+  4. `404|USER_NOT_FOUND`
+  5. `409|FRIEND_REQUEST_PENDING`
+  6. `409|ALREADY_FRIENDS`
+- **Ví dụ**:
+```text
+C: SEND_FRIEND_REQUEST|username=binh_tran|message=Chào Bình, kết bạn nhé!
+S: 201|CREATED|request_id=31|status=PENDING
+```
+
+#### 4.5.2. `RESPOND_FRIEND_REQUEST` — Chấp nhận / từ chối lời mời kết bạn
+- **Mô tả**: chỉ người nhận (`addressee_id == current_user_id`) được phản hồi bản ghi `PENDING`. `ACCEPT` cập nhật `status = 'ACCEPTED'`; `REJECT` xóa bản ghi để hai người vẫn có thể gửi lại lời mời về sau.
+- **Tham số yêu cầu**:
+
+| Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
+| :--- | :---: | :---: | :--- |
+| `request_id` | `int64` | Có | `>= 1`. |
+| `action` | `enum` | Có | `ACCEPT` hoặc `REJECT`. |
+
+- **Phản hồi thành công**:
+  - Khi `action=ACCEPT`: `200|OK|request_id=<int64>|user_id=<int64>|username=<string>|full_name=<string>|online_status=<enum>|last_seen=<timestamp>` (thông tin của người gửi lời mời để client thêm ngay vào danh bạ).
+  - Khi `action=REJECT`: `200|OK`.
+- **Thông báo đẩy phát sinh**: khi `action=ACCEPT`, phát `102|PUSH_FRIEND_ACC` tới người gửi lời mời nếu đang online. Khi `REJECT` không phát thông báo.
+- **Lỗi theo thứ tự kiểm tra**:
+  1. `401|AUTHENTICATION_REQUIRED`
+  2. `400|INVALID_FIELD`
+  3. `404|FRIEND_REQUEST_NOT_FOUND`
+  4. `403|NOT_REQUEST_ADDRESSEE`
+  5. `409|REQUEST_ALREADY_PROCESSED` (bản ghi đã ở trạng thái `ACCEPTED`)
+- **Ví dụ**:
+```text
+C: RESPOND_FRIEND_REQUEST|request_id=31|action=ACCEPT
+S: 200|OK|request_id=31|user_id=5|username=an_nguyen|full_name=Nguyễn An|online_status=ONLINE|last_seen=0
+```
+
+#### 4.5.3. `UNFRIEND` — Hủy kết bạn
+- **Mô tả**: trong một giao dịch `BEGIN IMMEDIATE`, xóa bản ghi `ACCEPTED` trong `friendships` và chạy `q8_revoke_invitations_between` để xóa toàn bộ lời mời sự kiện `INVITED` còn treo giữa hai người. Tư cách `ACCEPTED` và các yêu cầu `REQUEST_PENDING` không bị ảnh hưởng.
+- **Tham số yêu cầu**:
+
+| Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
+| :--- | :---: | :---: | :--- |
+| `user_id` hoặc `username` | `int64` / `string` | Đúng 1 khóa | Tham chiếu người bạn cần hủy; không được là chính mình. |
+
+- **Phản hồi thành công**: `200|OK|revoked_invitations=<int>` (tổng số lời mời sự kiện bị thu hồi).
+- **Thông báo đẩy phát sinh**:
+  - `104|PUSH_FRIEND_REMOVED` tới người bạn kia nếu đang online.
+  - Với mỗi lời mời bị thu hồi mà người được mời (`user_id`) **khác** người gọi lệnh `UNFRIEND`, phát `114|PUSH_INVITATION_REVOKED|...|reason=UNFRIENDED` tới người được mời đó nếu đang online.
+- **Lỗi theo thứ tự kiểm tra**:
+  1. `401|AUTHENTICATION_REQUIRED`
+  2. `400|INVALID_FIELD`
+  3. `400|CANNOT_TARGET_SELF`
+  4. `404|USER_NOT_FOUND`
+  5. `404|FRIENDSHIP_NOT_FOUND` (chưa kết bạn hoặc mới chỉ `PENDING`)
+- **Ví dụ**:
+```text
+C: UNFRIEND|user_id=7
+S: 200|OK|revoked_invitations=1
+```
+
+#### 4.5.4. `GET_FRIENDS` — Danh sách bạn bè và trạng thái trực tuyến
+- **Mô tả**: truy vấn danh sách bạn bè `ACCEPTED` (`q2_friends`), đối chiếu `session_map` dưới khóa đọc để gắn `ONLINE`/`OFFLINE`, sắp xếp `ONLINE` trước rồi `username` tăng dần, sau đó áp lọc `ONLINE_ONLY` và phân trang.
+- **Tham số yêu cầu**:
+
+| Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
+| :--- | :---: | :---: | :--- |
+| `filter_status` | `enum` | Không | `ALL` (mặc định) hoặc `ONLINE_ONLY`. |
+| `keyword` | `string` | Không | 1–50 ký tự sau trim, một dòng; tìm trong `username` hoặc `full_name`. |
+| `page` | `int64` | Không | `>= 1` (mặc định `1`). |
+| `page_size` | `int64` | Không | `1..50` (mặc định `20`). |
+
+- **Phản hồi thành công**:
+  - Dòng tiêu đề: `200|OK|total=<int>|page=<int>|page_size=<int>|count=<N>`
+  - Theo sau là `N` dòng: `ITEM|user_id=<int64>|username=<string>|full_name=<string>|online_status=<enum>|last_seen=<timestamp>`
+- **Lỗi theo thứ tự kiểm tra**:
+  1. `401|AUTHENTICATION_REQUIRED`
+  2. `400|INVALID_FIELD`
+- **Ví dụ**:
+```text
+C: GET_FRIENDS|filter_status=ALL|page=1|page_size=20
+S: 200|OK|total=1|page=1|page_size=20|count=1
+S: ITEM|user_id=7|username=binh_tran|full_name=Trần Bình|online_status=ONLINE|last_seen=1795400000
+```
+
+#### 4.5.5. `GET_FRIEND_REQUESTS` — Danh sách lời mời kết bạn đang chờ
+- **Mô tả**: truy vấn các bản ghi `PENDING` (`q3_friend_requests_incoming` hoặc `q3_friend_requests_outgoing`), sắp xếp mới nhất trước (`created_at DESC, request_id DESC`). Đây là lệnh truy vấn bù cho `101`.
+- **Tham số yêu cầu**:
+
+| Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
+| :--- | :---: | :---: | :--- |
+| `direction` | `enum` | Không | `INCOMING` (mặc định: lời mời gửi tới mình) hoặc `OUTGOING` (lời mời mình đã gửi). |
+| `page` | `int64` | Không | `>= 1` (mặc định `1`). |
+| `page_size` | `int64` | Không | `1..50` (mặc định `20`). |
+
+- **Phản hồi thành công**:
+  - Dòng tiêu đề: `200|OK|total=<int>|page=<int>|page_size=<int>|count=<N>`
+  - Theo sau là `N` dòng: `ITEM|request_id=<int64>|user_id=<int64>|username=<string>|full_name=<string>|message=<string>|created_at=<timestamp>`
+- **Lỗi theo thứ tự kiểm tra**:
+  1. `401|AUTHENTICATION_REQUIRED`
+  2. `400|INVALID_FIELD`
+- **Ví dụ**:
+```text
+C: GET_FRIEND_REQUESTS|direction=INCOMING|page=1|page_size=20
+S: 200|OK|total=1|page=1|page_size=20|count=1
+S: ITEM|request_id=31|user_id=5|username=an_nguyen|full_name=Nguyễn An|message=Chào Bình, kết bạn nhé!|created_at=1795410000
+```
+
+---
+
+### 4.6. Nhóm Tham gia sự kiện (`FEAT-13` → `FEAT-16`)
+
+#### 4.6.1. `INVITE_TO_EVENT` — Gửi lời mời tham gia sự kiện tới bạn bè
+- **Mô tả**: `Organizer` mời được trong mọi sự kiện của mình (lời mời được duyệt trước); `Participant` chỉ mời được trong sự kiện `PUBLIC` (dưới dạng lời giới thiệu, khi được chấp nhận sẽ chuyển thành `REQUEST_PENDING`). Người mời và người được mời bắt buộc là bạn bè (`ACCEPTED`). Nếu `Organizer` mời người đang `REQUEST_PENDING` → kiểm tra sức chứa (`q6_capacity`) và chuyển thẳng sang `ACCEPTED` (`200|OK`). Nếu `Organizer` mời người đang được `Participant` giới thiệu (`INVITED` bởi `P`) → nâng cấp `invited_by = Organizer` và gửi lại `110` với `pre_approved=1`.
+- **Tham số yêu cầu**:
+
+| Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
+| :--- | :---: | :---: | :--- |
+| `event_id` | `int64` | Có | `>= 1`. |
+| `user_id` hoặc `username` | `int64` / `string` | Đúng 1 khóa | Tham chiếu người bạn muốn mời; không được là chính mình. |
+
+- **Phản hồi thành công**:
+  - Tạo mới hoặc làm mới/nâng cấp lời mời: `201|CREATED|event_id=<int64>|user_id=<int64>|status=INVITED`
+  - `Organizer` mời người đang `REQUEST_PENDING` (nguyên tắc 2): `200|OK|event_id=<int64>|user_id=<int64>|status=ACCEPTED`
+- **Thông báo đẩy phát sinh**:
+  - `→ INVITED`: `110|PUSH_EVENT_INVITE` tới người được mời (`pre_approved=1` nếu người mời là `Organizer`, `0` nếu là `Participant`).
+  - `REQUEST_PENDING → ACCEPTED`: `112|PUSH_JOIN_DECIDED|...|result=ACCEPTED` tới người được mời.
+- **Lỗi theo thứ tự kiểm tra**:
+  1. `401|AUTHENTICATION_REQUIRED`
+  2. `400|INVALID_FIELD`
+  3. `400|CANNOT_TARGET_SELF`
+  4. `404|EVENT_NOT_FOUND` (không tồn tại hoặc là `PRIVATE` không xem được)
+  5. `404|USER_NOT_FOUND`
+  6. `403|NOT_AUTHORIZED_TO_INVITE` (không phải thành viên, hoặc `Participant` trong sự kiện `PRIVATE`)
+  7. `403|NOT_FRIENDS` (hai người không phải bạn bè `ACCEPTED`)
+  8. `409|EVENT_ALREADY_FINISHED`
+  9. `409|ALREADY_MEMBER`
+  10. `409|INVITATION_PENDING`
+  11. `409|JOIN_REQUEST_PENDING` (khi `Participant` mời người đang chờ duyệt)
+  12. `409|JOIN_REQUEST_REJECTED` (khi `Participant` mời người từng bị `Organizer` từ chối)
+  13. `409|EVENT_CAPACITY_REACHED` (khi `Organizer` mời người đang `REQUEST_PENDING` nhưng sự kiện đã đầy)
+- **Ví dụ**:
+```text
+C: INVITE_TO_EVENT|event_id=20|username=an_nguyen
+S: 201|CREATED|event_id=20|user_id=5|status=INVITED
+```
+
+#### 4.6.2. `RESPOND_EVENT_INVITATION` — Chấp nhận / từ chối lời mời tham gia sự kiện
+- **Mô tả**: `Invitee` phản hồi lời mời `INVITED` hiện có. Khi `ACCEPT`, kiểm tra sức chứa (`q6_capacity`): nếu là lời mời của `Organizer` (`invited_by == creator_id`) → `ACCEPTED`; nếu là lời giới thiệu của `Participant` → `REQUEST_PENDING`. Khi `REJECT` → `DECLINED`.
+- **Tham số yêu cầu**:
+
+| Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
+| :--- | :---: | :---: | :--- |
+| `event_id` | `int64` | Có | `>= 1`. |
+| `action` | `enum` | Có | `ACCEPT` hoặc `REJECT`. |
+
+- **Phản hồi thành công**: `200|OK|event_id=<int64>|status=<enum>` (`status` là `ACCEPTED`, `REQUEST_PENDING` hoặc `DECLINED`).
+- **Thông báo đẩy phát sinh**:
+  - `113|PUSH_INVITATION_RESPONDED` tới người đã mời (`invited_by`), với `result` tương ứng là `ACCEPTED`, `PENDING_APPROVAL` hoặc `DECLINED`.
+  - Nếu chuyển thành `REQUEST_PENDING` (lời giới thiệu được đồng ý): phát thêm `111|PUSH_JOIN_REQ` tới `Organizer` kèm `referred_by=<invited_by>`.
+- **Lỗi theo thứ tự kiểm tra**:
+  1. `401|AUTHENTICATION_REQUIRED`
+  2. `400|INVALID_FIELD`
+  3. `404|EVENT_NOT_FOUND`
+  4. `404|INVITATION_NOT_FOUND` (không có bản ghi `INVITED` của người gọi)
+  5. `409|EVENT_ALREADY_FINISHED`
+  6. `409|EVENT_CAPACITY_REACHED` (khi `action=ACCEPT` và sự kiện đã đầy)
+- **Ví dụ**:
+```text
+C: RESPOND_EVENT_INVITATION|event_id=20|action=ACCEPT
+S: 200|OK|event_id=20|status=ACCEPTED
+```
+
+#### 4.6.3. `REQUEST_JOIN_EVENT` — Xin tham gia sự kiện công khai (`PUBLIC`)
+- **Mô tả**: người dùng tự xin tham gia sự kiện xem được. Sự kiện `PRIVATE` mà người gọi không có lời mời nhận `404|EVENT_NOT_FOUND`. Nếu đang có lời mời của `Organizer` → chuyển thẳng sang `ACCEPTED` (`200|OK`). Nếu đang có lời giới thiệu của `Participant` → chuyển sang `REQUEST_PENDING` (`201|CREATED`) và giữ nguyên `invited_by`. Mọi chuyển đổi đều kiểm tra sức chứa (`q6_capacity`).
+- **Tham số yêu cầu**:
+
+| Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
+| :--- | :---: | :---: | :--- |
+| `event_id` | `int64` | Có | `>= 1`. |
+| `message` | `string` | Không | 0–200 ký tự sau trim, một dòng (mặc định `''`). |
+
+- **Phản hồi thành công**:
+  - Tạo yêu cầu chờ duyệt (kể cả chuyển từ lời giới thiệu của `Participant`): `201|CREATED|event_id=<int64>|status=REQUEST_PENDING`
+  - Chấp nhận thẳng do đang có lời mời của `Organizer` (nguyên tắc 2): `200|OK|event_id=<int64>|status=ACCEPTED`
+- **Thông báo đẩy phát sinh**:
+  - `→ REQUEST_PENDING`: `111|PUSH_JOIN_REQ` tới `Organizer` (nếu đi từ lời giới thiệu của `Participant`, gửi thêm `113|PUSH_INVITATION_RESPONDED|...|result=PENDING_APPROVAL` tới `Participant` đó).
+  - `INVITED` (của `Organizer`) `→ ACCEPTED`: `113|PUSH_INVITATION_RESPONDED|...|result=ACCEPTED` tới `Organizer`.
+- **Lỗi theo thứ tự kiểm tra**:
+  1. `401|AUTHENTICATION_REQUIRED`
+  2. `400|INVALID_FIELD`
+  3. `404|EVENT_NOT_FOUND` (không tồn tại hoặc sự kiện `PRIVATE` không xem được)
+  4. `409|EVENT_ALREADY_FINISHED`
+  5. `409|ALREADY_MEMBER`
+  6. `409|JOIN_REQUEST_PENDING`
+  7. `409|JOIN_REQUEST_REJECTED`
+  8. `409|EVENT_CAPACITY_REACHED`
+- **Ví dụ**:
+```text
+C: REQUEST_JOIN_EVENT|event_id=15|message=Cho mình tham gia giao lưu với
+S: 201|CREATED|event_id=15|status=REQUEST_PENDING
+```
+
+#### 4.6.4. `DECIDE_JOIN_REQUEST` — Phê duyệt / từ chối yêu cầu tham gia sự kiện
+- **Mô tả**: chỉ `Organizer` được duyệt yêu cầu `REQUEST_PENDING` trên sự kiện chưa kết thúc. `ACCEPT` kiểm tra sức chứa (`q6_capacity`) rồi chuyển sang `ACCEPTED`. `REJECT` chuyển sang `REJECTED` (người này không thể tự xin lại; chỉ `Organizer` mới mời lại được).
+- **Tham số yêu cầu**:
+
+| Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
+| :--- | :---: | :---: | :--- |
+| `event_id` | `int64` | Có | `>= 1`. |
+| `user_id` hoặc `username` | `int64` / `string` | Đúng 1 khóa | Tham chiếu người xin tham gia. |
+| `action` | `enum` | Có | `ACCEPT` hoặc `REJECT`. |
+
+- **Phản hồi thành công**: `200|OK|event_id=<int64>|user_id=<int64>|status=<enum>` (`ACCEPTED` hoặc `REJECTED`).
+- **Thông báo đẩy phát sinh**: `112|PUSH_JOIN_DECIDED` (`result=ACCEPTED` hoặc `REJECTED`) tới người xin tham gia nếu đang online.
+- **Lỗi theo thứ tự kiểm tra**:
+  1. `401|AUTHENTICATION_REQUIRED`
+  2. `400|INVALID_FIELD`
+  3. `404|EVENT_NOT_FOUND`
+  4. `404|USER_NOT_FOUND`
+  5. `403|NOT_EVENT_ORGANIZER`
+  6. `404|JOIN_REQUEST_NOT_FOUND`
+  7. `409|EVENT_ALREADY_FINISHED`
+  8. `409|EVENT_CAPACITY_REACHED` (chỉ khi `action=ACCEPT`)
+- **Ví dụ**:
+```text
+C: DECIDE_JOIN_REQUEST|event_id=15|user_id=9|action=ACCEPT
+S: 200|OK|event_id=15|user_id=9|status=ACCEPTED
+```
