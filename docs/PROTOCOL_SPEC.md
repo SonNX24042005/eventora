@@ -811,3 +811,174 @@ S: 201|CREATED|event_id=15|status=REQUEST_PENDING
 C: DECIDE_JOIN_REQUEST|event_id=15|user_id=9|action=ACCEPT
 S: 200|OK|event_id=15|user_id=9|status=ACCEPTED
 ```
+
+---
+
+## 5. Danh mục toàn bộ 12 thông báo đẩy thời gian thực (`1xx`)
+
+### 5.1. Nguyên tắc vận hành thông báo đẩy
+1. **Không gửi lại khi ngoại tuyến**: chỉ đẩy tới các phiên đang có mặt trong `session_map` tại thời điểm sau khi giao dịch SQLite commit thành công.
+2. **Không tự đẩy cho người thao tác**: người gửi lệnh nhận phản hồi `2xx`; thông báo đẩy chỉ gửi cho các tác nhân liên quan khác (trừ `199|PUSH_SESSION_TERMINATED` gửi cho chính kết nối sắp đóng).
+3. **Truy vấn bù đồng bộ**: mỗi thông báo đẩy (`101`–`121`) đều gắn với một lệnh truy vấn bù để client đồng bộ lại trạng thái sau khi đăng nhập lại hoặc khôi phục kết nối.
+4. **Không chen giữa khối danh sách**: việc đẩy vào `tx_buf` của từng phiên thực hiện dưới khóa `tx_buf` của phiên đó, không bao giờ cắt ngang giữa `200|OK|...|count=N` và `N` dòng `ITEM`.
+
+### 5.2. Bảng tổng hợp và đặc tả chi tiết 12 mã `1xx`
+
+| Mã | Tên thông báo | Người nhận | Phát sinh khi | Lệnh truy vấn bù |
+| :---: | :--- | :--- | :--- | :--- |
+| `101` | `PUSH_FRIEND_REQ` | Người nhận lời mời | `SEND_FRIEND_REQUEST` tạo `PENDING` | `GET_FRIEND_REQUESTS` (`INCOMING`) |
+| `102` | `PUSH_FRIEND_ACC` | Người gửi lời mời | `RESPOND_FRIEND_REQUEST` (`ACCEPT`), hoặc `SEND_FRIEND_REQUEST` ghép đôi | `GET_FRIENDS` |
+| `103` | `PUSH_FRIEND_STATUS` | Bạn bè đang online | Bạn bè `LOGIN`, `LOGOUT`, ngắt kết nối hoặc `IDLE_TIMEOUT` | `GET_FRIENDS` |
+| `104` | `PUSH_FRIEND_REMOVED` | Người bị hủy kết bạn | `UNFRIEND` | `GET_FRIENDS` |
+| `110` | `PUSH_EVENT_INVITE` | Người được mời (`U`) | `INVITE_TO_EVENT` tạo/nâng cấp `INVITED` | `GET_EVENTS` (`scope=INVITED`) |
+| `111` | `PUSH_JOIN_REQ` | `Organizer` | `REQUEST_JOIN_EVENT` hoặc `RESPOND_EVENT_INVITATION` tạo `REQUEST_PENDING` | `GET_EVENT_MEMBERS` (`status=REQUEST_PENDING`) |
+| `112` | `PUSH_JOIN_DECIDED` | Người xin tham gia (`U`) | `DECIDE_JOIN_REQUEST`, `INVITE_TO_EVENT` (chấp nhận thẳng), hoặc `UPDATE_EVENT` (`PUBLIC`→`PRIVATE`) | `GET_EVENTS` (`JOINED` / `REQUESTED`) |
+| `113` | `PUSH_INVITATION_RESPONDED` | Người đã mời (`invited_by`) | `RESPOND_EVENT_INVITATION`, hoặc `REQUEST_JOIN_EVENT` khi đang `INVITED` | `GET_EVENT_MEMBERS` |
+| `114` | `PUSH_INVITATION_REVOKED` | Người được mời (`U`) | `UPDATE_EVENT` (`PUBLIC`→`PRIVATE`) hoặc `UNFRIEND` thu hồi lời mời | `GET_EVENTS` (`scope=INVITED`) |
+| `120` | `PUSH_EVENT_UPDATED` | `ACCEPTED`, `INVITED`, `REQUEST_PENDING` (trừ `Organizer`) | `UPDATE_EVENT` | `GET_EVENT_DETAIL` |
+| `121` | `PUSH_EVENT_CANCELLED` | Như `120` | `DELETE_EVENT` trên sự kiện chưa kết thúc | `GET_EVENTS` |
+| `199` | `PUSH_SESSION_TERMINATED` | Chính kết nối sắp bị đóng | Server chủ động đóng kết nối | — |
+
+#### Chi tiết payload từng mã thông báo đẩy
+
+1. **`101|PUSH_FRIEND_REQ`**
+   - **Trường**: `request_id=<int64>`, `user_id=<int64>` *(người gửi)*, `username=<string>`, `full_name=<string>`, `message=<string>`, `created_at=<timestamp>`.
+   - **Ví dụ**:
+     `S: 101|PUSH_FRIEND_REQ|request_id=31|user_id=5|username=an_nguyen|full_name=Nguyễn An|message=Chào Bình, kết bạn nhé!|created_at=1795410000`
+
+2. **`102|PUSH_FRIEND_ACC`**
+   - **Trường**: `request_id=<int64>`, `user_id=<int64>` *(người chấp nhận)*, `username=<string>`, `full_name=<string>`, `online_status=ONLINE`.
+   - **Ví dụ**:
+     `S: 102|PUSH_FRIEND_ACC|request_id=31|user_id=7|username=binh_tran|full_name=Trần Bình|online_status=ONLINE`
+
+3. **`103|PUSH_FRIEND_STATUS`**
+   - **Trường**: `user_id=<int64>`, `username=<string>`, `status=<ONLINE|OFFLINE>`, `last_seen=<timestamp>`.
+   - **Ví dụ**:
+     `S: 103|PUSH_FRIEND_STATUS|user_id=7|username=binh_tran|status=OFFLINE|last_seen=1795415000`
+
+4. **`104|PUSH_FRIEND_REMOVED`**
+   - **Trường**: `user_id=<int64>` *(người thực hiện hủy)*, `username=<string>`, `full_name=<string>`.
+   - **Ví dụ**:
+     `S: 104|PUSH_FRIEND_REMOVED|user_id=5|username=an_nguyen|full_name=Nguyễn An`
+
+5. **`110|PUSH_EVENT_INVITE`**
+   - **Trường**: `event_id=<int64>`, `title=<string>`, `start_time=<timestamp>`, `inviter_id=<int64>`, `inviter_name=<string>`, `pre_approved=<0|1>` (`1` nếu `inviter_id == creator_id`, `0` nếu là lời giới thiệu của `Participant`).
+   - **Ví dụ**:
+     `S: 110|PUSH_EVENT_INVITE|event_id=20|title=Sinh nhật Bình|start_time=1796562000|inviter_id=7|inviter_name=Trần Bình|pre_approved=1`
+
+6. **`111|PUSH_JOIN_REQ`**
+   - **Trường**: `event_id=<int64>`, `title=<string>`, `requester_id=<int64>`, `username=<string>`, `full_name=<string>`, `message=<string>` `[|referred_by=<int64>]` (`referred_by` chỉ có mặt khi đi từ lời giới thiệu của `Participant`).
+   - **Ví dụ**:
+     `S: 111|PUSH_JOIN_REQ|event_id=15|title=Đá bóng \| giao hữu|requester_id=9|username=chi_le|full_name=Lê Chi|message=|referred_by=5`
+
+7. **`112|PUSH_JOIN_DECIDED`**
+   - **Trường**: `event_id=<int64>`, `title=<string>`, `result=<ACCEPTED|REJECTED>` `[|reason=EVENT_BECAME_PRIVATE]` (`reason` chỉ có mặt khi yêu cầu bị xóa do `UPDATE_EVENT` đổi `PUBLIC` sang `PRIVATE`).
+   - **Ví dụ**:
+     `S: 112|PUSH_JOIN_DECIDED|event_id=15|title=Đá bóng \| giao hữu|result=ACCEPTED`
+
+8. **`113|PUSH_INVITATION_RESPONDED`**
+   - **Trường**: `event_id=<int64>`, `title=<string>`, `user_id=<int64>` *(người được mời)*, `username=<string>`, `full_name=<string>`, `result=<ACCEPTED|PENDING_APPROVAL|DECLINED>`.
+   - **Ví dụ**:
+     `S: 113|PUSH_INVITATION_RESPONDED|event_id=20|title=Sinh nhật Bình|user_id=5|username=an_nguyen|full_name=Nguyễn An|result=ACCEPTED`
+
+9. **`114|PUSH_INVITATION_REVOKED`**
+   - **Trường**: `event_id=<int64>`, `title=<string>`, `reason=<EVENT_BECAME_PRIVATE|UNFRIENDED>`.
+   - **Ví dụ**:
+     `S: 114|PUSH_INVITATION_REVOKED|event_id=20|title=Sinh nhật Bình|reason=UNFRIENDED`
+
+10. **`120|PUSH_EVENT_UPDATED`**
+    - **Trường**: `event_id=<int64>`, `title=<string>`, `changed_fields=<csv>` (tên các trường đã thay đổi cách nhau bởi dấu `,`, ví dụ `location,max_participants`).
+    - **Ví dụ**:
+      `S: 120|PUSH_EVENT_UPDATED|event_id=12|title=Họp lớp K68|changed_fields=location,max_participants`
+
+11. **`121|PUSH_EVENT_CANCELLED`**
+    - **Trường**: `event_id=<int64>`, `title=<string>`.
+    - **Ví dụ**:
+      `S: 121|PUSH_EVENT_CANCELLED|event_id=12|title=Họp lớp K68`
+
+12. **`199|PUSH_SESSION_TERMINATED`**
+    - **Trường**: `reason=<LOGGED_IN_ELSEWHERE|IDLE_TIMEOUT|TOO_MANY_FAILED_ATTEMPTS|SERVER_SHUTDOWN>`.
+    - **Ví dụ**:
+      `S: 199|PUSH_SESSION_TERMINATED|reason=LOGGED_IN_ELSEWHERE`
+
+---
+
+## 6. Mã trạng thái, mã lý do lỗi, thứ tự kiểm tra và ánh xạ SQLite
+
+### 6.1. Nhóm mã trạng thái phản hồi
+
+| Mã | Ý nghĩa | Nguyên tắc sử dụng |
+| :---: | :--- | :--- |
+| `1xx` | Thông báo đẩy | Server chủ động phát, không gắn với yêu cầu nào. |
+| `200`, `201` | Thành công | `200\|OK` cho truy vấn/cập nhật (`200\|PONG`, `200\|BYE` riêng cho `PING`/`QUIT`); `201\|CREATED` khi tạo bản ghi mới. |
+| `400` | Lỗi cú pháp / miền giá trị | Kiểm tra được mà không cần đọc cơ sở dữ liệu. |
+| `401` | Chưa xác thực / sai thông tin đăng nhập | Chỉ dùng cho trạng thái phiên và lệnh `LOGIN`. |
+| `403` | Không đủ quyền / khóa tài khoản | Quyền trên đối tượng xem được, sai `old_password`, tài khoản tạm khóa. |
+| `404` | Không tìm thấy / bị ẩn quyền xem | Sự kiện `PRIVATE` không xem được **luôn** trả `404\|EVENT_NOT_FOUND`, không trả `403`. |
+| `409` | Xung đột trạng thái dữ liệu | Trùng lặp, đã xử lý, đã đầy, đã kết thúc. |
+| `422` | Lỗi ngữ nghĩa | Quy tắc thời gian sự kiện và mật khẩu mới trùng cũ. |
+| `500`, `503` | Lỗi hạ tầng phía server | `500\|INTERNAL_ERROR` cho lỗi nội bộ đã bắt; `503\|SERVER_BUSY` cho quá tải/tranh chấp SQLite. |
+
+### 6.2. Danh mục đầy đủ 37 mã lý do lỗi
+
+| Mã | Mã lý do | Trường phụ | Khi nào phát sinh |
+| :---: | :--- | :---: | :--- |
+| `400` | `MALFORMED_FRAME` | — | Dòng rỗng, UTF-8 hỏng, ký tự điều khiển bị cấm, escape hỏng, khóa sai `[a-z0-9_]+` hoặc trùng khóa. |
+| `400` | `FRAME_TOO_LARGE` | — | Khung vượt `65.536` byte; server trả mã này rồi chuyển kết nối sang `STATE_CLOSING`. |
+| `400` | `UNKNOWN_COMMAND` | — | Tên lệnh không nằm trong 23 lệnh hợp lệ. |
+| `400` | `INVALID_FIELD` | `field=<tên khóa>` | Thiếu khóa bắt buộc, khóa lạ, truyền đồng thời `user_id` và `username`, sai kiểu/độ dài/miền enum/một dòng. |
+| `400` | `NOTHING_TO_UPDATE` | — | `UPDATE_PROFILE` hoặc `UPDATE_EVENT` không kèm trường cập nhật nào. |
+| `400` | `CANNOT_TARGET_SELF` | — | Tự kết bạn, tự hủy kết bạn hoặc tự mời chính mình vào sự kiện. |
+| `400` | `ALREADY_AUTHENTICATED` | — | Gửi `LOGIN` hoặc `REGISTER` khi đang ở `STATE_AUTHENTICATED`. |
+| `401` | `AUTHENTICATION_REQUIRED` | — | Gửi lệnh yêu cầu đăng nhập khi đang ở `STATE_ANONYMOUS`. |
+| `401` | `INVALID_CREDENTIALS` | — | `LOGIN` sai tên đăng nhập hoặc mật khẩu (một mã chung cho cả hai). |
+| `403` | `ACCOUNT_LOCKED` | `retry_after=<giây>` | Tài khoản đang bị khóa tạm thời (`locked_until > now`). |
+| `403` | `OLD_PASSWORD_INCORRECT` | — | `CHANGE_PASSWORD` nhập sai `old_password`. |
+| `403` | `NOT_EVENT_ORGANIZER` | — | Thực hiện lệnh chỉ dành cho `Organizer` (`UPDATE_EVENT`, `DELETE_EVENT`, `DECIDE_JOIN_REQUEST`, `GET_EVENT_MEMBERS` với `INVITED`/`REQUEST_PENDING`). |
+| `403` | `NOT_AUTHORIZED_TO_INVITE` | — | Người gọi không phải thành viên, hoặc `Participant` gọi `INVITE_TO_EVENT` trên sự kiện `PRIVATE`. |
+| `403` | `NOT_FRIENDS` | — | Mời người chưa phải bạn bè `ACCEPTED` vào sự kiện. |
+| `403` | `NOT_REQUEST_ADDRESSEE` | — | Gọi `RESPOND_FRIEND_REQUEST` trên lời mời không gửi tới mình. |
+| `404` | `USER_NOT_FOUND` | — | Người dùng đích không tồn tại. |
+| `404` | `EVENT_NOT_FOUND` | — | Sự kiện không tồn tại hoặc là `PRIVATE` mà người gọi không có quyền xem. |
+| `404` | `FRIEND_REQUEST_NOT_FOUND` | — | Lời mời kết bạn `request_id` không tồn tại (bao gồm đã bị `REJECT`). |
+| `404` | `FRIENDSHIP_NOT_FOUND` | — | `UNFRIEND` khi hai người không ở trạng thái `ACCEPTED`. |
+| `404` | `INVITATION_NOT_FOUND` | — | `RESPOND_EVENT_INVITATION` khi người gọi không có bản ghi `INVITED`. |
+| `404` | `JOIN_REQUEST_NOT_FOUND` | — | `DECIDE_JOIN_REQUEST` khi người dùng đích không có bản ghi `REQUEST_PENDING`. |
+| `409` | `USERNAME_ALREADY_EXISTS` | — | `REGISTER` trùng `username` (không phân biệt hoa thường). |
+| `409` | `ALREADY_FRIENDS` | — | `SEND_FRIEND_REQUEST` khi hai người đã là bạn bè `ACCEPTED`. |
+| `409` | `FRIEND_REQUEST_PENDING` | — | `SEND_FRIEND_REQUEST` khi người gọi đã gửi lời mời trước đó và đang `PENDING`. |
+| `409` | `REQUEST_ALREADY_PROCESSED` | — | `RESPOND_FRIEND_REQUEST` cho bản ghi đã ở trạng thái `ACCEPTED`. |
+| `409` | `ALREADY_MEMBER` | — | `INVITE_TO_EVENT` hoặc `REQUEST_JOIN_EVENT` cho người đã là `ORGANIZER` hoặc `ACCEPTED`. |
+| `409` | `INVITATION_PENDING` | — | `INVITE_TO_EVENT` khi đối tượng đang có lời mời `INVITED` phù hợp cấp độ. |
+| `409` | `JOIN_REQUEST_PENDING` | — | `REQUEST_JOIN_EVENT` hoặc `Participant` gọi `INVITE_TO_EVENT` cho người đang `REQUEST_PENDING`. |
+| `409` | `JOIN_REQUEST_REJECTED` | — | `REQUEST_JOIN_EVENT` hoặc `Participant` gọi `INVITE_TO_EVENT` cho người từng bị `Organizer` từ chối (`REJECTED`). |
+| `409` | `EVENT_CAPACITY_REACHED` | — | Chấp nhận/duyệt vào sự kiện khi `max_participants > 0` và số `PARTICIPANT` đã đạt giới hạn. |
+| `409` | `EVENT_ALREADY_FINISHED` | — | Thao tác sửa, mời, xin hoặc duyệt trên sự kiện có `end_time <= now`. |
+| `409` | `CAPACITY_LESS_THAN_CURRENT_MEMBERS` | — | `UPDATE_EVENT` đặt `max_participants > 0` nhỏ hơn số `PARTICIPANT` đang `ACCEPTED`. |
+| `422` | `START_TIME_IN_PAST` | — | `CREATE_EVENT` hoặc `UPDATE_EVENT` đặt `start_time <= now`. |
+| `422` | `INVALID_EVENT_TIMES` | — | Thời lượng ngoài đoạn `[900, 2.592.000]`, `start_time` xa hơn 2 năm, sửa `start_time` khi sự kiện đang diễn ra, hoặc `new_end <= now`. |
+| `422` | `PASSWORD_UNCHANGED` | — | `CHANGE_PASSWORD` có `new_password` trùng `old_password`. |
+| `500` | `INTERNAL_ERROR` | — | Lỗi nội bộ hoặc vi phạm ràng buộc SQLite bất ngờ đã được bắt; rollback và giữ server chạy. |
+| `503` | `SERVER_BUSY` | — | Hết file descriptor, đạt `MAX_CLIENTS`, hoặc SQLite vẫn `SQLITE_BUSY` sau `SQLITE_MAX_RETRIES = 3` lần thử lại. |
+
+### 6.3. Thứ tự kiểm tra lỗi cố định (8 bước)
+Khi một yêu cầu vi phạm đồng thời nhiều quy tắc, server **bắt buộc** trả lỗi của bước đầu tiên thất bại theo thứ tự sau để phản hồi luôn xác định:
+
+1. Khung bản tin (`400|MALFORMED_FRAME`, `400|FRAME_TOO_LARGE`).
+2. Tên lệnh (`400|UNKNOWN_COMMAND`).
+3. Trạng thái phiên (`401|AUTHENTICATION_REQUIRED`, `400|ALREADY_AUTHENTICATED`).
+4. Cú pháp và miền giá trị trường không cần chạm DB (`400|INVALID_FIELD`, `400|NOTHING_TO_UPDATE`, `400|CANNOT_TARGET_SELF`).
+5. Đối tượng chính tồn tại và xem được (`404|USER_NOT_FOUND`, `404|EVENT_NOT_FOUND`, `404|FRIEND_REQUEST_NOT_FOUND`).
+6. Quyền thao tác trên đối tượng chính (`403|ACCOUNT_LOCKED`, `403|OLD_PASSWORD_INCORRECT`, `403|NOT_EVENT_ORGANIZER`, `403|NOT_AUTHORIZED_TO_INVITE`, `403|NOT_FRIENDS`, `403|NOT_REQUEST_ADDRESSEE`).
+7. Bản ghi phụ thuộc tồn tại (`404|FRIENDSHIP_NOT_FOUND`, `404|INVITATION_NOT_FOUND`, `404|JOIN_REQUEST_NOT_FOUND`).
+8. Trạng thái nghiệp vụ và quy tắc ngữ nghĩa (`409|*`, `422|*`), đúng theo thứ tự đã liệt kê ở từng lệnh trong mục 4.
+
+### 6.4. Ánh xạ lỗi cơ sở dữ liệu SQLite sang mã giao thức
+Server bật `sqlite3_extended_result_codes(db, 1)` theo `DATABASE_SCHEMA.md` mục 9:
+
+| Mã lỗi SQLite mở rộng | Ngữ cảnh | Phản hồi giao thức |
+| :--- | :--- | :--- |
+| `SQLITE_CONSTRAINT_UNIQUE` trên `users.username` | Hai lệnh `REGISTER` cùng tên chạy song song qua bước kiểm tra ngoài giao dịch | `409\|USERNAME_ALREADY_EXISTS` |
+| `SQLITE_CONSTRAINT_UNIQUE` trên `ux_friendships_pair` hoặc `_PRIMARYKEY` trên `event_participants` | Lỗi tranh chấp do không bọc đúng `BEGIN IMMEDIATE` | Rollback, log `ERROR`, `500\|INTERNAL_ERROR` |
+| `SQLITE_CONSTRAINT_CHECK` / `_NOTNULL` / `_FOREIGNKEY` / `_TRIGGER` / `_DATATYPE` | Tầng service bỏ sót bước kiểm tra đầu vào/nghiệp vụ | Rollback, log `ERROR` kèm tên ràng buộc, `500\|INTERNAL_ERROR` |
+| `SQLITE_BUSY` | Quá `busy_timeout = 5000 ms` | Rollback và chạy lại toàn bộ giao dịch tối đa `3` lần; nếu vẫn bận → `503\|SERVER_BUSY` |
