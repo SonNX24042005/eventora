@@ -982,3 +982,106 @@ Server bật `sqlite3_extended_result_codes(db, 1)` theo `DATABASE_SCHEMA.md` m�
 | `SQLITE_CONSTRAINT_UNIQUE` trên `ux_friendships_pair` hoặc `_PRIMARYKEY` trên `event_participants` | Lỗi tranh chấp do không bọc đúng `BEGIN IMMEDIATE` | Rollback, log `ERROR`, `500\|INTERNAL_ERROR` |
 | `SQLITE_CONSTRAINT_CHECK` / `_NOTNULL` / `_FOREIGNKEY` / `_TRIGGER` / `_DATATYPE` | Tầng service bỏ sót bước kiểm tra đầu vào/nghiệp vụ | Rollback, log `ERROR` kèm tên ràng buộc, `500\|INTERNAL_ERROR` |
 | `SQLITE_BUSY` | Quá `busy_timeout = 5000 ms` | Rollback và chạy lại toàn bộ giao dịch tối đa `3` lần; nếu vẫn bận → `503\|SERVER_BUSY` |
+
+---
+
+## 7. Kịch bản luồng tương tác đầu-cuối
+
+### 7.1. Đăng ký, đăng nhập và đá phiên cũ (`LOGGED_IN_ELSEWHERE`)
+
+```mermaid
+sequenceDiagram
+    participant C1 as Client 1 (an_nguyen)
+    participant C2 as Client 2 (an_nguyen mới)
+    participant S as Server Core & Auth Pool
+    participant F as Client 3 (Bạn online)
+
+    C1->>S: REGISTER|username=an_nguyen|password=MatKhau#2026|full_name=Nguyễn An
+    S-->>C1: 201|CREATED|user_id=5
+    C1->>S: LOGIN|username=an_nguyen|password=MatKhau#2026
+    S-->>C1: 200|OK|user_id=5|username=an_nguyen|...|pending_friend_requests=0|...
+    S-->>F: 103|PUSH_FRIEND_STATUS|user_id=5|username=an_nguyen|status=ONLINE|last_seen=0
+
+    Note over C2,S: Tài khoản an_nguyen đăng nhập từ thiết bị khác
+    C2->>S: LOGIN|username=an_nguyen|password=MatKhau#2026
+    S-->>C1: 199|PUSH_SESSION_TERMINATED|reason=LOGGED_IN_ELSEWHERE
+    Note over C1,S: Kết nối C1 chuyển STATE_CLOSING và đóng sau khi xả tx_buf
+    S-->>C2: 200|OK|user_id=5|username=an_nguyen|...
+    Note over S,F: Không gửi 103 vì an_nguyen trực tuyến liên tục
+```
+
+### 7.2. Kết bạn, lời mời `PRIVATE` và lời giới thiệu `PUBLIC` (`Participant` → `Organizer`)
+
+```mermaid
+sequenceDiagram
+    participant O as Organizer (Bình, id=7)
+    participant P as Participant (An, id=5)
+    participant U as Bạn của An (Chi, id=9)
+    participant S as Server Core
+
+    Note over O,S: Bình tạo sự kiện PUBLIC (event_id=15) và An đã tham gia (ACCEPTED)
+    P->>S: INVITE_TO_EVENT|event_id=15|username=chi_le
+    S-->>P: 201|CREATED|event_id=15|user_id=9|status=INVITED
+    S-->>U: 110|PUSH_EVENT_INVITE|event_id=15|title=Đá bóng \| giao hữu|start_time=...|inviter_id=5|inviter_name=Nguyễn An|pre_approved=0
+
+    U->>S: RESPOND_EVENT_INVITATION|event_id=15|action=ACCEPT
+    S-->>U: 200|OK|event_id=15|status=REQUEST_PENDING
+    S-->>P: 113|PUSH_INVITATION_RESPONDED|event_id=15|title=Đá bóng \| giao hữu|user_id=9|username=chi_le|full_name=Lê Chi|result=PENDING_APPROVAL
+    S-->>O: 111|PUSH_JOIN_REQ|event_id=15|title=Đá bóng \| giao hữu|requester_id=9|username=chi_le|full_name=Lê Chi|message=|referred_by=5
+
+    O->>S: DECIDE_JOIN_REQUEST|event_id=15|user_id=9|action=ACCEPT
+    S-->>O: 200|OK|event_id=15|user_id=9|status=ACCEPTED
+    S-->>U: 112|PUSH_JOIN_DECIDED|event_id=15|title=Đá bóng \| giao hữu|result=ACCEPTED
+```
+
+### 7.3. Pipelining, khối phản hồi danh sách nguyên tử và thông báo đẩy xen kẽ
+
+```text
+C: PING
+C: GET_FRIENDS|filter_status=ALL|page=1|page_size=2
+C: GET_EVENTS|scope=MINE|page=1|page_size=1
+S: 200|PONG
+S: 200|OK|total=2|page=1|page_size=2|count=2
+S: ITEM|user_id=7|username=binh_tran|full_name=Trần Bình|online_status=ONLINE|last_seen=1795400000
+S: ITEM|user_id=9|username=chi_le|full_name=Lê Chi|online_status=OFFLINE|last_seen=1795380000
+S: 101|PUSH_FRIEND_REQ|request_id=40|user_id=11|username=dung_pham|full_name=Phạm Dũng|message=Kết bạn nhé|created_at=1795420000
+S: 200|OK|total=1|page=1|page_size=1|count=1
+S: ITEM|event_id=12|title=Họp lớp K68|location=Hà Nội|start_time=1796475600|end_time=1796482800|visibility=PUBLIC|creator_id=5|creator_name=Nguyễn An|participant_count=3|max_participants=0|my_relation=OWNER|pending_request_count=1
+```
+
+*(Thông báo `101` được đẩy giữa phản hồi của `GET_FRIENDS` và `GET_EVENTS`, tuyệt đối không cắt ngang giữa `200|OK|...|count=2` và hai dòng `ITEM` của `GET_FRIENDS`).*
+
+---
+
+## 8. Hướng dẫn kiểm thử giao thức và nghiệm thu
+
+### 8.1. Kiểm thử nhanh bằng `netcat` (`nc`)
+Thử nghiệm tách khung `\n` (Linux `nc`) hoặc `\r\n` (`nc -C` / `telnet`) trực tiếp vào cổng `8888`:
+
+```bash
+nc 127.0.0.1 8888 << 'EOF'
+PING
+REGISTER|username=test_user|password=MatKhau#123|full_name=Người Dùng Thử
+LOGIN|username=test_user|password=MatKhau#123
+CREATE_EVENT|title=Sự kiện \| Demo|description=Dòng 1\nDòng 2|location=Hà Nội|start_time=1893456000|end_time=1893463200|visibility=PRIVATE
+GET_EVENTS|scope=MINE
+QUIT
+EOF
+```
+
+### 8.2. Bộ unit test bắt buộc cho module `protocol/`
+Mọi hàm đóng khung và giải mã phải đạt độ bao phủ `> 90%` trước khi chuyển sang giai đoạn cài đặt nghiệp vụ:
+
+1. **Phân mảnh & dính gói**:
+   - Đẩy liên tiếp từng đoạn 1 byte, 2 byte và ngẫu nhiên qua `rx_buf` cho tới khi đủ khung.
+   - Ghép `100` bản tin hợp lệ trong một lần đọc duy nhất và xác nhận trích xuất đúng `100` khung theo thứ tự FIFO.
+2. **Biên kích thước khung**:
+   - Dòng có tổng chiều dài đúng `65.536` byte (kể cả `\n` hoặc `\r\n`) → giải mã thành công.
+   - Dòng `65.537` byte (hoặc `rx_buf` đầy `65.536` byte chưa có `\n`) → `400|FRAME_TOO_LARGE` và chuyển `STATE_CLOSING`.
+3. **Mã hóa / giải mã và ký tự đặc biệt**:
+   - Kiểm tra vòng tròn (`encode` → `decode`) với chuỗi chứa `\`, `|`, `=`, CR, LF, TAB và tiếng Việt có dấu UTF-8; trường một dòng chứa `\n`/`\r`/`\t` sau unescape bị từ chối với `400|INVALID_FIELD`.
+4. **Khung hỏng & kiểm tra khóa**:
+   - Chuỗi UTF-8 lỗi (`0xFF`, overlong encoding), byte điều khiển thô `0x00`/`0x07`, escape lạ (`\a`, `\` cuối chuỗi), thiếu dấu `=`, khóa trùng lặp, khóa viết hoa → `400|MALFORMED_FRAME`.
+   - Khóa không tồn tại trong định nghĩa lệnh → `400|INVALID_FIELD|field=<key>`.
+5. **Khối danh sách & thông báo đẩy**:
+   - Xác minh client nhận đồng thời dòng `200|OK|...|count=N`, đúng `N` dòng `ITEM` và các khung `1xx` xen giữa hai phản hồi mà không bị lệch trạng thái bộ đệm.
