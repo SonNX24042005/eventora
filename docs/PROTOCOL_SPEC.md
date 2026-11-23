@@ -5,11 +5,19 @@
 | **Tên dự án** | **Eventora** — ứng dụng quản lý sự kiện và kết nối bạn bè |
 | **Mã tài liệu** | `DOC-PROTO-01` |
 | **Đường dẫn tệp** | `docs/PROTOCOL_SPEC.md` |
-| **Phiên bản** | `1.0.0` (giao thức `eventora/1`) |
+| **Phiên bản** | `1.0.1` (giao thức `eventora/1`) |
+| **Ngày lập** | 17/11/2026 (cập nhật: 23/11/2026) |
 | **Tài liệu gốc** | [FEATURE_SPEC.md](./FEATURE_SPEC.md) (`v2.0.1`), [DATABASE_SCHEMA.md](./DATABASE_SCHEMA.md) (`v1.0.0`, `user_version = 1`) |
 | **Phân công** | `FATng` viết chính, `SonNX24042005` duyệt chéo |
-| **Trạng thái** | Bản đầu tiên, chờ `SonNX24042005` duyệt chéo |
+| **Trạng thái** | Đã duyệt chéo và chốt thiết kế cơ sở (baseline approved) |
 | **Tầng vận chuyển** | TCP cổng mặc định `8888` (tùy chọn bọc TLS qua OpenSSL `--tls`) |
+
+### Lịch sử thay đổi
+
+| Phiên bản | Ngày | Nội dung chính |
+| :---: | :---: | :--- |
+| `1.0.0` | 22/11/2026 | Bản đặc tả giao thức đầu tiên cho 23 lệnh, 12 thông báo đẩy `1xx` và 37 mã lỗi (`FATng`). |
+| `1.0.1` | 23/11/2026 | Duyệt chéo bởi `SonNX24042005`: sửa lỗi mốc thời gian ví dụ `nc`, bổ sung nhánh FSM và số lượng lệnh, sửa lỗi hiển thị bảng escape, chuẩn hóa ABNF phân biệt hoa thường và chốt các trường hợp biên cho unit test. |
 
 ---
 
@@ -26,7 +34,7 @@ Tài liệu này chuẩn hóa **giao thức tầng ứng dụng `eventora/1`** c
 ### 1.2. Ranh giới với các tài liệu thiết kế trước
 - **Nghiệp vụ và thứ tự kiểm tra lỗi**: kế thừa nguyên vẹn từ `FEATURE_SPEC.md` (`v2.0.1`). Tài liệu này quy định chi tiết cú pháp trên đường truyền (`wire format`), tên khóa, kiểu dữ liệu, phản hồi thành công, payload của thông báo đẩy và bảng ánh xạ mã lỗi.
 - **Lưu trữ bền vững**: mọi tên trường, kiểu giá trị, giới hạn độ dài, miền giá trị `enum` và ràng buộc dữ liệu khớp trực tiếp với `DATABASE_SCHEMA.md` (`v1.0.0`, `user_version = 1`).
-- **Tính nhất quán đa nhánh**: phiên bản `FEATURE_SPEC.md` (`v2.0.1`) và `DATABASE_SCHEMA.md` (`v1.0.0`) hiện nằm trên nhánh `origin/docs/feature-spec-v2` trong khi nhánh `main` còn bản đặc tả `1.0.0`. Đặc tả giao thức này bám theo bản đã rà soát `v2.0.1` và `v1.0.0`.
+- **Đồng bộ tài liệu thiết kế**: cả ba tài liệu cơ sở (`FEATURE_SPEC.md` `v2.0.1`, `DATABASE_SCHEMA.md` `v1.0.0` và `PROTOCOL_SPEC.md` `v1.0.1`) đã được rà soát và đồng bộ trực tiếp trên nhánh `main`.
 
 ---
 
@@ -47,21 +55,21 @@ Tài liệu này chuẩn hóa **giao thức tầng ứng dụng `eventora/1`** c
 - **Dòng rỗng**: một dòng chỉ gồm `\n` hoặc `\r\n` (độ dài phần thân bằng `0`) bị từ chối với `400|MALFORMED_FRAME` (giữ kết nối).
 
 ### 2.2. Văn phạm chính thức (ABNF)
-Định nghĩa theo RFC 5234 cho phần thân bản tin (sau khi đã loại bỏ `\r\n` hoặc `\n` ở cuối dòng):
+Định nghĩa theo RFC 5234 (kèm ký hiệu `%s"..."` phân biệt chữ hoa/thường theo RFC 7405) cho phần thân bản tin sau khi đã loại bỏ `\r\n` hoặc `\n` ở cuối dòng:
 
 ```abnf
 frame           = request-frame / response-frame / item-frame / push-frame
 
 request-frame   = command *( "|" field )
 response-frame  = status-code "|" reason-code *( "|" field )
-item-frame      = "ITEM" *( "|" field )
+item-frame      = %s"ITEM" *( "|" field )
 push-frame      = push-code "|" push-name *( "|" field )
 
 command         = UPALPHA *( UPALPHA / DIGIT / "_" )
 status-code     = ("2" / "4" / "5") 2DIGIT
 reason-code     = UPALPHA *( UPALPHA / DIGIT / "_" )
 push-code       = "1" 2DIGIT
-push-name       = "PUSH_" UPALPHA *( UPALPHA / DIGIT / "_" )
+push-name       = %s"PUSH_" UPALPHA *( UPALPHA / DIGIT / "_" )
 
 field           = key "=" value
 key             = 1*( lcalpha / DIGIT / "_" )   ; khớp [a-z0-9_]+
@@ -71,7 +79,7 @@ lcalpha         = %x61-7A                       ; a-z
 UPALPHA         = %x41-5A                       ; A-Z
 DIGIT           = %x30-39                       ; 0-9
 safe-char       = escaped-seq / utf8-no-ctrl
-escaped-seq     = "\\" / "\|" / "\r" / "\n" / "\t"
+escaped-seq     = %x5C ( %x5C / %x7C / %x72 / %x6E / %x74 ) ; \\, \|, \r, \n, \t (phân biệt chữ hoa/thường)
 ; utf8-no-ctrl: mọi Unicode scalar value >= U+0020, khác U+007F, khác '\' (%x5C) và '|' (%x7C)
 ```
 
@@ -88,7 +96,7 @@ Bảng ánh xạ escape bắt buộc khi mã hóa và giải mã phần `value`:
 | Ký tự gốc | Mã hóa trên đường truyền | Ghi chú |
 | :---: | :---: | :--- |
 | `\` (`U+005C`) | `\\` | Bắt buộc escape đầu tiên để tránh nhầm với chuỗi escape |
-| `\|` (`U+007C`) | `\|` | Phân tách trường trong bản tin |
+| `\|` (`U+007C`) | `\\|` *(hai ký tự `\` và `\|`)* | Phân tách trường trong bản tin |
 | CR (`U+000D`) | `\r` | Chỉ hợp lệ trong trường cho phép nhiều dòng |
 | LF (`U+000A`) | `\n` | Chỉ hợp lệ trong trường cho phép nhiều dòng |
 | TAB (`U+0009`) | `\t` | Chỉ hợp lệ trong trường cho phép nhiều dòng |
@@ -153,8 +161,8 @@ stateDiagram-v2
     STATE_ANONYMOUS --> STATE_AUTHENTICATED: LOGIN thành công (200 OK)
     STATE_AUTHENTICATED --> STATE_AUTHENTICATED: PING / các lệnh nghiệp vụ
     STATE_AUTHENTICATED --> STATE_ANONYMOUS: LOGOUT (200 OK)
-    STATE_ANONYMOUS --> STATE_CLOSING: QUIT / lỗi khung quá dài / idle timeout / shutdown
-    STATE_AUTHENTICATED --> STATE_CLOSING: QUIT / đá phiên / sai mật khẩu quá 5 lần / timeout / shutdown
+    STATE_ANONYMOUS --> STATE_CLOSING: QUIT / lỗi khung quá dài / sai mật khẩu quá 5 lần / idle timeout / shutdown
+    STATE_AUTHENTICATED --> STATE_CLOSING: QUIT / lỗi khung quá dài / đá phiên / sai mật khẩu quá 5 lần / idle timeout / shutdown
     STATE_CLOSING --> [*]: Xả xong tx_buf hoặc quá CLOSE_DRAIN_TIMEOUT (2s)
     STATE_ANONYMOUS --> [*]: Client đóng kết nối / lỗi socket / tràn tx_buf
     STATE_AUTHENTICATED --> [*]: Client đóng kết nối / lỗi socket / tràn tx_buf (kèm dọn session_map)
@@ -168,7 +176,7 @@ stateDiagram-v2
 | `QUIT` | `200\|BYE` → `STATE_CLOSING` | `200\|BYE` → `STATE_CLOSING` | Bỏ qua | `worker pool` |
 | `REGISTER`, `LOGIN` | Cho phép | `400\|ALREADY_AUTHENTICATED` | Bỏ qua | `auth pool` |
 | `CHANGE_PASSWORD` | `401\|AUTHENTICATION_REQUIRED` | Cho phép | Bỏ qua | `auth pool` |
-| `LOGOUT` và 15 lệnh nghiệp vụ còn lại | `401\|AUTHENTICATION_REQUIRED` | Cho phép (theo phân quyền) | Bỏ qua | `worker pool` |
+| `LOGOUT` và 17 lệnh nghiệp vụ còn lại | `401\|AUTHENTICATION_REQUIRED` | Cho phép (theo phân quyền) | Bỏ qua | `worker pool` |
 | Tên lệnh không tồn tại | `400\|UNKNOWN_COMMAND` | `400\|UNKNOWN_COMMAND` | Bỏ qua | `worker pool` |
 
 > **Lưu ý về tách `auth pool`**: `REGISTER`, `LOGIN` và `CHANGE_PASSWORD` chạy PBKDF2-HMAC-SHA256 (`600.000` vòng, khoảng `125 ms` CPU/lần) trên `auth_queue` riêng (`AUTH_POOL_SIZE = 4`) để không làm nghẽn `worker pool` (`THREAD_POOL_SIZE = 8`). Tuy nhiên, để giữ đúng thứ tự phản hồi FIFO trên từng kết nối, phiên vẫn chỉ được xử lý tuần tự từng bản tin một (cơ chế `scheduled` bảo đảm lệnh đứng sau không vượt lên trước lệnh auth đang chạy).
@@ -218,7 +226,7 @@ stateDiagram-v2
 | **Bạn bè** | `GET_FRIEND_REQUESTS` | `FEAT-12` | `STATE_AUTHENTICATED` | `worker` | `200\|OK` (+ `ITEM`) | — |
 | **Tham gia** | `INVITE_TO_EVENT` | `FEAT-13` | `STATE_AUTHENTICATED` | `worker` | `201\|CREATED` / `200\|OK` | `110` / `112` |
 | **Tham gia** | `RESPOND_EVENT_INVITATION` | `FEAT-14` | `STATE_AUTHENTICATED` | `worker` | `200\|OK` | `113`, `111` (khi thành chờ duyệt) |
-| **Tham gia** | `REQUEST_JOIN_EVENT` | `FEAT-15` | `STATE_AUTHENTICATED` | `worker` | `201\|CREATED` / `200\|OK` | `111` / `113` |
+| **Tham gia** | `REQUEST_JOIN_EVENT` | `FEAT-15` | `STATE_AUTHENTICATED` | `worker` | `201\|CREATED` / `200\|OK` | `111`, `113` |
 | **Tham gia** | `DECIDE_JOIN_REQUEST` | `FEAT-16` | `STATE_AUTHENTICATED` | `worker` | `200\|OK` | `112` |
 
 ---
@@ -248,12 +256,12 @@ S: 200|BYE
 ```
 
 #### 4.2.3. `LOGIN` — Đăng nhập tài khoản
-- **Mô tả**: xác thực tài khoản trên `auth pool` bằng PBKDF2-HMAC-SHA256 và `CRYPTO_memcmp()`. Nếu tài khoản đang dùng phiên với số vòng lặp PBKDF2 cũ hơn `PBKDF2_ITERATIONS`, server tự động băm lại theo số vòng mới sau khi xác thực thành công. Nếu thành công, chuyển kết nối sang `STATE_AUTHENTICATED` và trả kèm bộ đếm chờ từ truy vấn `q12_login_counters`.
+- **Mô tả**: xác thực tài khoản trên `auth pool` bằng PBKDF2-HMAC-SHA256 và `CRYPTO_memcmp()`. Nếu tài khoản lưu trong cơ sở dữ liệu có `pbkdf2_iterations` nhỏ hơn `PBKDF2_ITERATIONS`, server tự động băm lại theo số vòng mới sau khi xác thực thành công. Nếu thành công, chuyển kết nối sang `STATE_AUTHENTICATED` và trả kèm bộ đếm chờ từ truy vấn `q12_login_counters`.
 - **Tham số yêu cầu**:
 
 | Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
 | :--- | :---: | :---: | :--- |
-| `username` | `string` | Có | 3–32 ký tự `[A-Za-z0-9_]`, một dòng, so khớp không phân biệt hoa thường (`COLLATE NOCASE`). |
+| `username` | `string` | Có | 3–32 ký tự `[A-Za-z0-9_]`, một dòng, so khớp không phân biệt hoa thường (`COLLATE NOCASE`). Kiểm tra cú pháp ở bước 4 (trả `400\|INVALID_FIELD\|field=username`) để từ chối sớm mà không chạy PBKDF2. |
 | `password` | `string` | Có | 1–64 ký tự, một dòng, **không trim**, không chứa ký tự điều khiển. |
 
 - **Phản hồi thành công**:
@@ -304,7 +312,7 @@ S: 200|OK
 | `username` | `string` | Có | 3–32 ký tự chỉ gồm `[A-Za-z0-9_]`, một dòng, duy nhất không phân biệt hoa thường. |
 | `password` | `string` | Có | 8–64 ký tự, một dòng, **không trim**, không chứa ký tự điều khiển. |
 | `full_name` | `string` | Có | 2–100 ký tự sau trim, một dòng. |
-| `email` | `string` | Không | Nếu bỏ trống hoặc rỗng (`email=`): lưu `NULL`. Nếu có giá trị: sau trim 3–100 ký tự, một dòng, không khoảng trắng, đúng 1 ký tự `@`, phần trước `@` ≥ 1 ký tự, phần sau `@` chứa ít nhất một dấu `.` không ở đầu hoặc cuối. |
+| `email` | `string` | Không | Nếu bỏ trống hoặc rỗng sau trim (kể cả `email=` hoặc chuỗi chỉ gồm khoảng trắng): lưu `NULL`. Nếu không rỗng: sau trim 3–100 ký tự, một dòng, không khoảng trắng, đúng 1 ký tự `@`, phần trước `@` ≥ 1 ký tự, phần sau `@` chứa ít nhất một dấu `.` không ở đầu hoặc cuối. |
 
 - **Phản hồi thành công**: `201|CREATED|user_id=<int64>`
 - **Thông báo đẩy phát sinh**: không có.
@@ -327,12 +335,12 @@ S: 201|CREATED|user_id=5
 | `user_id` | `int64` | Không* | ID người dùng cần xem (`>= 1`). Không truyền cùng `username`. |
 | `username` | `string` | Không* | Tên đăng nhập cần xem (3–32 ký tự `[A-Za-z0-9_]`). Không truyền cùng `user_id`. |
 
-*\*Nếu vắng cả `user_id` lẫn `username`: xem hồ sơ của chính người gọi.*
+*\*Nếu vắng cả `user_id` lẫn `username`: xem hồ sơ của chính người gọi. Truyền trực tiếp `user_id` hoặc `username` của chính mình cũng trả `relation=SELF`.*
 
 - **Phản hồi thành công**:
   `200|OK|user_id=<int64>|username=<string>|full_name=<string>|bio=<string>|created_at=<timestamp>|last_seen=<timestamp>|relation=<enum>[|request_id=<int64>][|email=<string>|online_status=<enum>]`
   - `relation`: một trong `SELF`, `FRIEND`, `REQUEST_SENT`, `REQUEST_RECEIVED`, `NONE`.
-  - `request_id`: **chỉ có mặt** khi `relation` là `REQUEST_SENT` hoặc `REQUEST_RECEIVED`.
+  - `request_id`: **chỉ có mặt** khi `relation` là `REQUEST_SENT` hoặc `REQUEST_RECEIVED` (chốt trả cho cả hai chiều để thống nhất unit test và hỗ trợ mở rộng hủy lời mời về sau).
   - `email` và `online_status` (`ONLINE` hoặc `OFFLINE`): **chỉ có mặt** khi `relation` là `SELF` hoặc `FRIEND` (nếu cột `email` là `NULL` trong DB, trả `email=`).
 - **Thông báo đẩy phát sinh**: không có.
 - **Lỗi theo thứ tự kiểm tra**:
@@ -352,7 +360,7 @@ S: 200|OK|user_id=7|username=binh_tran|full_name=Trần Bình|bio=Yêu chạy b�
 | Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
 | :--- | :---: | :---: | :--- |
 | `full_name` | `string` | Không | 2–100 ký tự sau trim, một dòng (`full_name=` rỗng bị từ chối). |
-| `email` | `string` | Không | `email=` (rỗng) → xóa về `NULL`. Nếu không rỗng: tuân thủ quy tắc `email` của `REGISTER`. |
+| `email` | `string` | Không | `email=` hoặc chuỗi chỉ gồm khoảng trắng sau trim → xóa về `NULL`. Nếu không rỗng: tuân thủ quy tắc `email` của `REGISTER`. |
 | `bio` | `string` | Không | 0–255 ký tự sau trim, **cho phép nhiều dòng** (`bio=` xóa về `''`). |
 
 - **Phản hồi thành công**: `200|OK` kèm đầy đủ các trường giống `GET_PROFILE` với `relation=SELF` (bao gồm `email` và `online_status=ONLINE`).
@@ -402,7 +410,7 @@ S: 200|OK
 | `scope` | `enum` | Không | `ALL` (mặc định), `MINE`, `JOINED`, `INVITED`, `REQUESTED`. |
 | `keyword` | `string` | Không | 1–100 ký tự sau trim, một dòng; tìm trong `title` và `description` (escape `%`, `_`, `\` cho SQLite `LIKE`). |
 | `from_time` | `timestamp` | Không | `>= 0`. Lọc `start_time >= from_time`. |
-| `to_time` | `timestamp` | Không | `>= 0`. Lọc `start_time <= to_time`. Nếu có cả hai phải thỏa `from_time <= to_time`. |
+| `to_time` | `timestamp` | Không | `>= 0`. Lọc `start_time <= to_time`. Nếu có cả hai phải thỏa `from_time <= to_time` (vi phạm trả `400\|INVALID_FIELD\|field=to_time`). |
 | `include_finished` | `bool` | Không | `0` (mặc định: chỉ lấy `end_time > now`) hoặc `1` (lấy cả sự kiện đã kết thúc). |
 | `page` | `int64` | Không | `>= 1` (mặc định `1`). |
 | `page_size` | `int64` | Không | `1..50` (mặc định `20`, giới hạn bởi `MAX_PAGE_SIZE = 50`). |
@@ -417,7 +425,7 @@ S: 200|OK
   - `pending_request_count`: **chỉ có mặt** khi `my_relation=OWNER`.
 - **Lỗi theo thứ tự kiểm tra**:
   1. `401|AUTHENTICATION_REQUIRED`
-  2. `400|INVALID_FIELD` (sai `scope`, `keyword` rỗng hoặc `> 100`, `from_time > to_time`, `include_finished`, `page`, `page_size` ngoài miền)
+  2. `400|INVALID_FIELD` (sai `scope`, `keyword` rỗng hoặc `> 100`, `from_time > to_time` với `field=to_time`, `include_finished`, `page`, `page_size` ngoài miền)
 - **Ví dụ**:
 ```text
 C: GET_EVENTS|scope=ALL|page=1|page_size=2
@@ -427,7 +435,7 @@ S: ITEM|event_id=15|title=Đá bóng \| giao hữu|location=Sân Bách Khoa|star
 ```
 
 #### 4.4.2. `GET_EVENT_DETAIL` — Xem chi tiết một sự kiện
-- **Mô tả**: trả thông tin đầy đủ (gồm cả `description`) của một sự kiện mà người gọi có quyền xem (`q4_visible_event`). Sự kiện `PRIVATE` không xem được luôn trả `404|EVENT_NOT_FOUND` để chống dò tìm `event_id`.
+- **Mô tả**: áp dụng điều kiện quyền xem của `q4_visible_event` kết hợp lấy đủ các cột chi tiết (`title`, `description`, `location`, `creator_name`, `created_at`, `updated_at`) và các bộ đếm của sự kiện. Sự kiện `PRIVATE` không xem được luôn trả `404|EVENT_NOT_FOUND` để chống dò tìm `event_id`.
 - **Tham số yêu cầu**:
 
 | Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
@@ -486,8 +494,8 @@ S: ITEM|user_id=9|username=chi_le|full_name=Lê Chi|role=PARTICIPANT|status=REQU
 | `title` | `string` | Có | 3–150 ký tự sau trim, một dòng. |
 | `description` | `string` | Không | 0–2000 ký tự sau trim, **cho phép nhiều dòng** (mặc định `''`). |
 | `location` | `string` | Có | 3–255 ký tự sau trim, một dòng. |
-| `start_time` | `timestamp` | Có | Phải thỏa `now < start_time <= now + 63.072.000` (tối đa 2 năm tới). |
-| `end_time` | `timestamp` | Có | Phải thỏa `900 <= end_time - start_time <= 2.592.000` (15 phút đến 30 ngày). |
+| `start_time` | `timestamp` | Có | `>= 0` (số âm → `400\|INVALID_FIELD\|field=start_time`). Phải thỏa `now < start_time <= now + 63.072.000` (tối đa 2 năm tới). |
+| `end_time` | `timestamp` | Có | `>= 0` (số âm → `400\|INVALID_FIELD\|field=end_time`). Phải thỏa `900 <= end_time - start_time <= 2.592.000` (15 phút đến 30 ngày). |
 | `visibility` | `enum` | Có | `PUBLIC` hoặc `PRIVATE`. |
 | `max_participants` | `int64` | Không | `0..10.000` (mặc định `0` = không giới hạn; không tính `Organizer`). |
 
@@ -514,15 +522,15 @@ S: 201|CREATED|event_id=12|title=Họp lớp K68|description=Gặp mặt cuối 
 | `title` | `string` | Không | 3–150 ký tự sau trim, một dòng. |
 | `description` | `string` | Không | 0–2000 ký tự sau trim, đa dòng (`description=` xóa về `''`). |
 | `location` | `string` | Không | 3–255 ký tự sau trim, một dòng. |
-| `start_time` | `timestamp` | Không | Sự kiện chưa bắt đầu: `new_start > now` và `<= now + 63072000`. Sự kiện đang diễn ra: cấm đổi (`new_start` khác giá trị cũ → `422|INVALID_EVENT_TIMES`). |
-| `end_time` | `timestamp` | Không | `new_end > now` và `900 <= new_end - new_start <= 2592000`. |
+| `start_time` | `timestamp` | Không | `>= 0` (số âm → `400\|INVALID_FIELD\|field=start_time`). Sự kiện chưa bắt đầu: `new_start > now` và `<= now + 63072000`. Sự kiện đang diễn ra: cấm đổi (`new_start` khác giá trị cũ → `422\|INVALID_EVENT_TIMES`). |
+| `end_time` | `timestamp` | Không | `>= 0` (số âm → `400\|INVALID_FIELD\|field=end_time`). `new_end > now` và `900 <= new_end - new_start <= 2592000`. |
 | `visibility` | `enum` | Không | `PUBLIC` hoặc `PRIVATE`. |
 | `max_participants` | `int64` | Không | `0..10.000`; nếu `> 0` phải `>= current_accepted_count`. |
 
 - **Phản hồi thành công**: `200|OK` kèm đầy đủ các trường sau cập nhật giống `GET_EVENT_DETAIL`.
 - **Thông báo đẩy phát sinh** *(sau khi commit thành công)*:
   1. Nếu chuyển `PUBLIC` → `PRIVATE`: `112|PUSH_JOIN_DECIDED` (`result=REJECTED`, `reason=EVENT_BECAME_PRIVATE`) cho các `REQUEST_PENDING` bị xóa; `114|PUSH_INVITATION_REVOKED` (`reason=EVENT_BECAME_PRIVATE`) cho các `INVITED` do `Participant` gửi bị xóa.
-  2. `120|PUSH_EVENT_UPDATED` (`changed_fields=<csv>`) tới mọi người dùng còn ở trạng thái `ACCEPTED`, `INVITED`, `REQUEST_PENDING` (trừ `Organizer`) đang online.
+  2. `120|PUSH_EVENT_UPDATED` (`title` sau cập nhật, `changed_fields=<csv>`) tới mọi người dùng còn ở trạng thái `ACCEPTED`, `INVITED`, `REQUEST_PENDING` (trừ `Organizer`) đang online. `changed_fields` chỉ liệt kê các trường **thực sự thay đổi giá trị** theo thứ tự cố định `title,description,location,start_time,end_time,visibility,max_participants`; nếu không có trường nào thay đổi giá trị thì vẫn trả `200|OK` nhưng **không** phát `120`.
 - **Lỗi theo thứ tự kiểm tra**:
   1. `401|AUTHENTICATION_REQUIRED`
   2. `400|INVALID_FIELD`
@@ -620,7 +628,7 @@ S: 200|OK|request_id=31|user_id=5|username=an_nguyen|full_name=Nguyễn An|onlin
 ```
 
 #### 4.5.3. `UNFRIEND` — Hủy kết bạn
-- **Mô tả**: trong một giao dịch `BEGIN IMMEDIATE`, xóa bản ghi `ACCEPTED` trong `friendships` và chạy `q8_revoke_invitations_between` để xóa toàn bộ lời mời sự kiện `INVITED` còn treo giữa hai người. Tư cách `ACCEPTED` và các yêu cầu `REQUEST_PENDING` không bị ảnh hưởng.
+- **Mô tả**: trong một giao dịch `BEGIN IMMEDIATE`, xóa bản ghi `ACCEPTED` trong `friendships`, chạy `q8_revoke_invitations_between` để xóa toàn bộ lời mời sự kiện `INVITED` còn treo giữa hai người và đọc thêm `events.title` cho các `event_id` bị thu hồi để điền vào thông báo `114|PUSH_INVITATION_REVOKED`. Tư cách `ACCEPTED` và các yêu cầu `REQUEST_PENDING` không bị ảnh hưởng.
 - **Tham số yêu cầu**:
 
 | Khóa | Kiểu | Bắt buộc | Ràng buộc & quy tắc |
@@ -887,7 +895,7 @@ S: 200|OK|event_id=15|user_id=9|status=ACCEPTED
      `S: 114|PUSH_INVITATION_REVOKED|event_id=20|title=Sinh nhật Bình|reason=UNFRIENDED`
 
 10. **`120|PUSH_EVENT_UPDATED`**
-    - **Trường**: `event_id=<int64>`, `title=<string>`, `changed_fields=<csv>` (tên các trường đã thay đổi cách nhau bởi dấu `,`, ví dụ `location,max_participants`).
+    - **Trường**: `event_id=<int64>`, `title=<string>` *(tiêu đề sau cập nhật)*, `changed_fields=<csv>` (các trường thực sự thay đổi giá trị, sắp theo thứ tự cố định `title,description,location,start_time,end_time,visibility,max_participants`; không phát `120` nếu danh sách rỗng).
     - **Ví dụ**:
       `S: 120|PUSH_EVENT_UPDATED|event_id=12|title=Họp lớp K68|changed_fields=location,max_participants`
 
@@ -949,7 +957,7 @@ S: 200|OK|event_id=15|user_id=9|status=ACCEPTED
 | `409` | `FRIEND_REQUEST_PENDING` | — | `SEND_FRIEND_REQUEST` khi người gọi đã gửi lời mời trước đó và đang `PENDING`. |
 | `409` | `REQUEST_ALREADY_PROCESSED` | — | `RESPOND_FRIEND_REQUEST` cho bản ghi đã ở trạng thái `ACCEPTED`. |
 | `409` | `ALREADY_MEMBER` | — | `INVITE_TO_EVENT` hoặc `REQUEST_JOIN_EVENT` cho người đã là `ORGANIZER` hoặc `ACCEPTED`. |
-| `409` | `INVITATION_PENDING` | — | `INVITE_TO_EVENT` khi đối tượng đang có lời mời `INVITED` phù hợp cấp độ. |
+| `409` | `INVITATION_PENDING` | — | `INVITE_TO_EVENT` khi đối tượng đã được `Organizer` mời (`INVITED`), hoặc khi `Participant` mời người đang ở trạng thái `INVITED`. |
 | `409` | `JOIN_REQUEST_PENDING` | — | `REQUEST_JOIN_EVENT` hoặc `Participant` gọi `INVITE_TO_EVENT` cho người đang `REQUEST_PENDING`. |
 | `409` | `JOIN_REQUEST_REJECTED` | — | `REQUEST_JOIN_EVENT` hoặc `Participant` gọi `INVITE_TO_EVENT` cho người từng bị `Organizer` từ chối (`REJECTED`). |
 | `409` | `EVENT_CAPACITY_REACHED` | — | Chấp nhận/duyệt vào sự kiện khi `max_participants > 0` và số `PARTICIPANT` đã đạt giới hạn. |
@@ -991,10 +999,10 @@ Server bật `sqlite3_extended_result_codes(db, 1)` theo `DATABASE_SCHEMA.md` m�
 
 ```mermaid
 sequenceDiagram
-    participant C1 as Client 1 (an_nguyen)
-    participant C2 as Client 2 (an_nguyen mới)
-    participant S as Server Core & Auth Pool
-    participant F as Client 3 (Bạn online)
+    participant C1 as "Client 1 (an_nguyen)"
+    participant C2 as "Client 2 (an_nguyen mới)"
+    participant S as "Server Core & Auth Pool"
+    participant F as "Client 3 (Bạn online)"
 
     C1->>S: REGISTER|username=an_nguyen|password=MatKhau#2026|full_name=Nguyễn An
     S-->>C1: 201|CREATED|user_id=5
@@ -1010,14 +1018,14 @@ sequenceDiagram
     Note over S,F: Không gửi 103 vì an_nguyen trực tuyến liên tục
 ```
 
-### 7.2. Kết bạn, lời mời `PRIVATE` và lời giới thiệu `PUBLIC` (`Participant` → `Organizer`)
+### 7.2. Lời giới thiệu tham gia sự kiện `PUBLIC` (`Participant` → `Organizer`)
 
 ```mermaid
 sequenceDiagram
-    participant O as Organizer (Bình, id=7)
-    participant P as Participant (An, id=5)
-    participant U as Bạn của An (Chi, id=9)
-    participant S as Server Core
+    participant O as "Organizer (Bình, id=7)"
+    participant P as "Participant (An, id=5)"
+    participant U as "Bạn của An (Chi, id=9)"
+    participant S as "Server Core"
 
     Note over O,S: Bình tạo sự kiện PUBLIC (event_id=15) và An đã tham gia (ACCEPTED)
     P->>S: INVITE_TO_EVENT|event_id=15|username=chi_le
@@ -1056,14 +1064,14 @@ S: ITEM|event_id=12|title=Họp lớp K68|location=Hà Nội|start_time=17964756
 ## 8. Hướng dẫn kiểm thử giao thức và nghiệm thu
 
 ### 8.1. Kiểm thử nhanh bằng `netcat` (`nc`)
-Thử nghiệm tách khung `\n` (Linux `nc`) hoặc `\r\n` (`nc -C` / `telnet`) trực tiếp vào cổng `8888`:
+Thử nghiệm tách khung `\n` (Linux `nc`) hoặc `\r\n` (`nc -C` / `telnet`) trực tiếp vào cổng `8888` *(mốc mẫu `1798761600`–`1798768800` tương ứng `2027-01-01 00:00–02:00 UTC`; điều chỉnh lại nếu chạy thử sau mốc này)*:
 
 ```bash
 nc 127.0.0.1 8888 << 'EOF'
 PING
 REGISTER|username=test_user|password=MatKhau#123|full_name=Người Dùng Thử
 LOGIN|username=test_user|password=MatKhau#123
-CREATE_EVENT|title=Sự kiện \| Demo|description=Dòng 1\nDòng 2|location=Hà Nội|start_time=1893456000|end_time=1893463200|visibility=PRIVATE
+CREATE_EVENT|title=Sự kiện \| Demo|description=Dòng 1\nDòng 2|location=Hà Nội|start_time=1798761600|end_time=1798768800|visibility=PRIVATE
 GET_EVENTS|scope=MINE
 QUIT
 EOF

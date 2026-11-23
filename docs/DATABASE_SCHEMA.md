@@ -564,7 +564,7 @@ ON CONFLICT (event_id, user_id) DO UPDATE SET
     updated_at = excluded.updated_at;
 ```
 
-**Q8 — thu hồi lời mời khi hủy kết bạn** (FEAT-11). `RETURNING` (có từ SQLite 3.35.0) trả về các lời mời vừa bị xóa để gửi `114 PUSH_INVITATION_REVOKED`:
+**Q8 — thu hồi lời mời khi hủy kết bạn** (FEAT-11). `RETURNING` (có từ SQLite 3.35.0) trả về các lời mời vừa bị xóa để gửi `114 PUSH_INVITATION_REVOKED`. Lưu ý: do `114|PUSH_INVITATION_REVOKED` trong `docs/PROTOCOL_SPEC.md` cần thêm trường `title`, tầng service đọc thêm `events.title` cho các `event_id` vừa thu hồi trong cùng giao dịch `BEGIN IMMEDIATE` trước khi commit:
 
 ```sql
 -- query: q8_revoke_invitations_between
