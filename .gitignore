@@ -1,3 +1,14 @@
 # Tài liệu tham khảo và ghi chú cá nhân
 knowledge/
 samer/
+
+# Thư mục biên dịch và tệp đo độ bao phủ
+build/
+*.gcda
+*.gcno
+*.gcov
+*.info
+
+# Dữ liệu chạy thử và log cục bộ
+data/
+logs/
