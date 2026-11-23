@@ -151,3 +151,13 @@ if(EVENTORA_BUILD_TESTS)
         message(WARNING "Không tìm thấy Python3; bỏ qua bài kiểm chứng lược đồ schema_check trong CTest")
     endif()
 endif()
+
+# 7. Mục tiêu tiện ích sinh báo cáo độ bao phủ bằng scripts/coverage.sh
+if(EVENTORA_ENABLE_COVERAGE)
+    add_custom_target(coverage
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/coverage.sh ${CMAKE_BINARY_DIR} 90
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Chạy kiểm thử và xuất báo cáo độ bao phủ LCOV"
+        USES_TERMINAL
+    )
+endif()

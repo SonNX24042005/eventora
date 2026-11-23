@@ -1,0 +1,65 @@
+name: Build, test and coverage
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+      - "docs/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-coverage:
+    name: Build C11, CTest and LCOV coverage
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install build and coverage dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            lcov \
+            libsqlite3-dev \
+            libssl-dev \
+            pkg-config \
+            python3
+
+      - name: Configure CMake with coverage enabled
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DEVENTORA_ENABLE_COVERAGE=ON \
+            -DEVENTORA_BUILD_TESTS=ON \
+            -DEVENTORA_ENABLE_WERROR=ON
+
+      - name: Build all targets
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Run CTest, LCOV report and > 90% coverage gate
+        run: ./scripts/coverage.sh build 90
+
+      - name: Upload LCOV coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lcov-coverage-report
+          path: |
+            build/coverage.info
+            build/coverage_html/
+          retention-days: 14
